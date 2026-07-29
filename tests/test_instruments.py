@@ -26,7 +26,7 @@ def test_find_config_for_idn_case_insensitive(instruments_dir):
 
 
 def test_find_config_for_idn_matches_rigol(instruments_dir):
-    """Реальный ответ прибора из стенда IDM-DNKMeter."""
+    """Реальный ответ прибора из стенда IDM-DNKMetr."""
     cfg = find_config_for_idn("RIGOL TECHNOLOGIES,DM3068,DM3O000000001,01.01", instruments_dir / "multimeters")
     assert cfg is not None
     assert cfg.name == "rigol_dm3068.json"
