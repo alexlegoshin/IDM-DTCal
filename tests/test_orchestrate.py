@@ -1,8 +1,8 @@
 import pandas as pd
 import pytest
+from openpyxl import load_workbook
 
-from report import build_report, write_report_xlsx
-from sensors import SENSOR_MODELS
+from report import build_report, write_report_xlsx, SIGNED_PERCENT_FORMAT
 
 
 def _params():
@@ -50,8 +50,39 @@ def test_build_report_error_has_sign():
     # Error = (V_meas - V_expected) / SPAN * 100, SPAN = 8V
     # First: (8.1 - 8.0) / 8 * 100 = +1.25%
     # Second: (7.9 - 8.0) / 8 * 100 = -1.25%
-    assert result.iloc[0]['Error_percent'] > 0
-    assert result.iloc[1]['Error_percent'] < 0
+    assert result.iloc[0]['Error_percent'] == pytest.approx(1.25)
+    assert result.iloc[1]['Error_percent'] == pytest.approx(-1.25)
+
+
+def test_build_report_on_empty_dataframe_returns_columns_not_crash():
+    """
+    Регрессия: если измерение остановили до первой точки, DataFrame пуст и
+    обращение к df['I_set_A'] падало с KeyError, унося с собой весь сеанс.
+    """
+    result = build_report(pd.DataFrame(), i_nom=100.0)
+
+    assert result.empty
+    for col in ('I_set_A', 'V_meas_V', 'V_expected_V', 'Error_percent'):
+        assert col in result.columns
+
+
+def test_build_report_rejects_nonpositive_i_nom():
+    """i_nom=0 дал бы деление на ноль в expected_voltage()."""
+    df = pd.DataFrame([{'Timestamp': 'x', 'Branch': 'forward', 'I_set_A': 0.0, 'V_meas_V': 6.0}])
+
+    with pytest.raises(ValueError):
+        build_report(df, i_nom=0.0)
+
+
+def test_build_report_keeps_nan_readings_as_nan():
+    """Неудачное чтение (NaN) не должно превратиться в погрешность-число."""
+    df = pd.DataFrame([
+        {'Timestamp': 'x', 'Branch': 'forward', 'I_set_A': 0.0, 'V_meas_V': float('nan')},
+    ])
+
+    result = build_report(df, i_nom=100.0)
+
+    assert pd.isna(result.iloc[0]['Error_percent'])
 
 
 def test_write_report_xlsx_creates_file_with_two_sheets(tmp_path):
@@ -66,7 +97,6 @@ def test_write_report_xlsx_creates_file_with_two_sheets(tmp_path):
 
     assert xlsx_path.exists()
 
-    # Read and verify both sheets
     xl = pd.ExcelFile(xlsx_path)
     assert 'Инфо' in xl.sheet_names
     assert 'Данные' in xl.sheet_names
@@ -74,9 +104,84 @@ def test_write_report_xlsx_creates_file_with_two_sheets(tmp_path):
     info_df = pd.read_excel(xlsx_path, sheet_name='Инфо')
     data_df = pd.read_excel(xlsx_path, sheet_name='Данные')
 
-    # Check info sheet has metadata
     assert len(info_df) > 0
     assert len(data_df) == 1
-    assert 'I_set_A' in data_df.columns
-    assert 'V_meas_V' in data_df.columns
-    assert 'Error_percent' in data_df.columns
+    # В отчёте заголовки человекочитаемые (внутри DataFrame остаются латиницей).
+    assert 'I задан., А' in data_df.columns
+    assert 'U измер., В' in data_df.columns
+    assert 'Погрешность, %' in data_df.columns
+
+
+def test_write_report_xlsx_translates_branch_names(tmp_path):
+    df = pd.DataFrame([
+        {'Timestamp': 'x', 'Branch': 'forward', 'I_set_A': 0.0, 'V_meas_V': 6.0},
+        {'Timestamp': 'x', 'Branch': 'reverse', 'I_set_A': -50.0, 'V_meas_V': 4.0},
+    ])
+    xlsx_path = tmp_path / "branches.xlsx"
+
+    write_report_xlsx(xlsx_path, build_report(df, i_nom=100.0), _params())
+
+    data_df = pd.read_excel(xlsx_path, sheet_name='Данные')
+    assert list(data_df['Направление']) == ['прямое', 'обратное']
+
+
+def test_write_report_xlsx_formats_sheet_for_reading(tmp_path):
+    """
+    Оформление должно быть готовым: закреплённая жирная шапка и формат
+    погрешности с явным знаком — чтобы файл не подгоняли руками.
+    """
+    df = pd.DataFrame([
+        {'Timestamp': 'x', 'Branch': 'forward', 'I_set_A': 50.0, 'V_meas_V': 8.1},
+    ])
+    xlsx_path = tmp_path / "formatted.xlsx"
+
+    write_report_xlsx(xlsx_path, build_report(df, i_nom=100.0), _params())
+
+    ws = load_workbook(xlsx_path)['Данные']
+    assert ws.freeze_panes == 'A2'
+    assert ws.cell(row=1, column=1).font.bold is True
+
+    headers = [ws.cell(row=1, column=c).value for c in range(1, ws.max_column + 1)]
+    err_col = headers.index('Погрешность, %') + 1
+    assert ws.cell(row=2, column=err_col).number_format == SIGNED_PERCENT_FORMAT
+
+    # Ширина колонок задана (иначе кириллица обрезается многоточием).
+    assert ws.column_dimensions['A'].width > 0
+
+
+def test_write_report_xlsx_info_sheet_contains_error_summary(tmp_path):
+    df = pd.DataFrame([
+        {'Timestamp': 'x', 'Branch': 'forward', 'I_set_A': 50.0, 'V_meas_V': 8.1},
+        {'Timestamp': 'x', 'Branch': 'reverse', 'I_set_A': -50.0, 'V_meas_V': 3.9},
+    ])
+    xlsx_path = tmp_path / "info.xlsx"
+
+    write_report_xlsx(xlsx_path, build_report(df, i_nom=100.0), _params())
+
+    info_df = pd.read_excel(xlsx_path, sheet_name='Инфо')
+    keys = list(info_df['Параметр'])
+    assert "Датчик" in keys
+    assert "Нормирующее значение погрешности, В" in keys
+    assert any("Макс" in k for k in keys)
+
+
+def test_write_report_xlsx_creates_missing_directory(tmp_path):
+    """Оператор мог выбрать папку, которой уже нет — не падаем."""
+    df = pd.DataFrame([{'Timestamp': 'x', 'Branch': 'forward', 'I_set_A': 0.0, 'V_meas_V': 6.0}])
+    xlsx_path = tmp_path / "nested" / "deeper" / "r.xlsx"
+
+    write_report_xlsx(xlsx_path, build_report(df, i_nom=100.0), _params())
+
+    assert xlsx_path.exists()
+
+
+def test_write_report_xlsx_handles_all_nan_data(tmp_path):
+    """Полностью неудачное измерение всё равно должно записаться (со сводкой «—»)."""
+    df = pd.DataFrame([
+        {'Timestamp': 'x', 'Branch': 'forward', 'I_set_A': 0.0, 'V_meas_V': float('nan')},
+    ])
+    xlsx_path = tmp_path / "nan.xlsx"
+
+    write_report_xlsx(xlsx_path, build_report(df, i_nom=100.0), _params())
+
+    assert xlsx_path.exists()

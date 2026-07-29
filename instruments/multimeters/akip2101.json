@@ -1,14 +1,17 @@
 {
-    "model_name": "AKIP-2101 / Siglent SDM3055",
-    "keywords": ["AKIP-2101", "SIGLENT"],
+    "model_name": "АКИП-2101 / Siglent SDM3055",
+    "keywords": ["AKIP-2101", "SIGLENT", "SDM3055", "SDM3045", "SDM3065"],
+    "notes": "Шкалы DCV 0.2/2/20/200/1000 В сверены по User Manual SDM3055 (200 мВ … 1000 В). На реальном приборе этой модели в стенде не проверялось (в стенде подключён АКИП-B7-78/1) — используется штатный SCPI-набор Siglent. Основная команда чтения MEAS:VOLT:DC? самодостаточна (сама включает функцию и автодиапазон), резервная READ? работает по конфигурации из init_commands.",
     "timeout": 5000,
     "encoding": "utf-8",
     "init_commands": [
         "*RST",
         "SENS:FUNC \"VOLT:DC\"",
-        "SENS:VOLT:DC:NPLC 1",
-        "SENS:VOLT:DC:RANG:AUTO OFF"
+        "SENS:VOLT:DC:NPLC 1"
     ],
-    "measure_command": "READ?",
+    "autorange_command": "SENS:VOLT:DC:RANG:AUTO ON",
+    "range_command": "SENS:VOLT:DC:RANG {range}",
+    "measure_command": "MEAS:VOLT:DC?",
+    "fallback_measure_command": "READ?",
     "ranges": [0.2, 2.0, 20.0, 200.0, 1000.0]
 }

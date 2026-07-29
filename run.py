@@ -115,9 +115,17 @@ def cmd_measure(args) -> int:
             pass
 
     print()
+    if df.empty:
+        print("Измерение не дало ни одной точки — файл содержит только метаданные.")
+        return 1
+
     print(df.head(10).to_string(index=False))
-    print(f"\nМаксимальная приведённая погрешность: {df['Error_percent'].abs().max():.4f} %")
-    print(f"Средняя приведённая погрешность (со знаком): {df['Error_percent'].mean():.4f} %")
+    errors = df['Error_percent'].dropna()
+    if errors.empty:
+        print("\nНи одно чтение вольтметра не удалось: все точки NaN. Проверьте подключение прибора.")
+        return 1
+    print(f"\nМаксимальная приведённая погрешность: {errors.abs().max():.4f} %")
+    print(f"Средняя приведённая погрешность (со знаком): {errors.mean():+.4f} %")
     return 0
 
 

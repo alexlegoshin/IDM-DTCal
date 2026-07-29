@@ -15,3 +15,6 @@ __pycache__/
 # Виртуальные окружения
 .venv/
 venv/
+
+# macOS
+.DS_Store

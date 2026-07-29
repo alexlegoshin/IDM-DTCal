@@ -6,32 +6,35 @@ from measurement import run_measurement, _measure_branch
 
 
 class FakeDMM:
-    """Заглушка Multimeter: отдаёт заготовленные значения напряжения по порядку вызовов."""
+    """
+    Заглушка вольтметра: отдаёт заготовленные значения напряжения по порядку вызовов.
+
+    Управления диапазоном здесь нет умышленно: в DTCal измеряемая величина
+    всегда лежит в 2..10 В, диапазон настраивается один раз при инициализации
+    прибора (аппаратный автодиапазон), а measurement.py его не трогает.
+    """
 
     def __init__(self, readings):
-        self.readings = list(readings)  # каждый элемент — либо float, либо Exception-класс/инстанс
-        self.ranges = [0.2, 2.0, 20.0, 200.0, 1000.0]
-        self.range_idx = len(self.ranges) - 1
-        self.set_range_calls = []
-        self.auto_range_calls = []
+        self.readings = list(readings)  # float либо инстанс исключения
+        self.calls = 0
 
     def measure_voltage(self) -> float:
+        self.calls += 1
         item = self.readings.pop(0)
         if isinstance(item, BaseException):
             raise item
         return item
 
-    def auto_range(self, measured_voltage, is_first=False):
-        self.auto_range_calls.append((measured_voltage, is_first))
-
-    def set_range(self, r):
-        self.set_range_calls.append(r)
-
 
 class FakeSource:
-    def __init__(self):
+    def __init__(self, fail_on=None):
         self.calls = []
         self.current_setpoints = []
+        self._fail_on = fail_on  # имя метода, который должен бросить исключение
+
+    def _maybe_fail(self, name):
+        if self._fail_on == name:
+            raise RuntimeError(f"FakeSource: сбой {name}")
 
     def setup(self, voltage_limit):
         self.calls.append(('setup', voltage_limit))
@@ -46,8 +49,12 @@ class FakeSource:
     def output_off(self):
         self.calls.append(('output_off',))
 
+    def output_count(self, name):
+        return sum(1 for c in self.calls if c[0] == name)
+
     def shutdown(self):
         self.calls.append(('shutdown',))
+        self._maybe_fail('shutdown')
 
 
 class FakeRelay:
@@ -132,20 +139,70 @@ def test_measure_branch_partial_failure_averages_successful_reads():
     assert results[0]['V_meas_V'] == pytest.approx((8.0 + 8.2) / 2)
 
 
-def test_measure_branch_range_reset_starts_from_max_range():
-    dmm = FakeDMM(readings=[6.0] * 3)
-    dmm.range_idx = 0
+def test_measure_branch_turns_output_off_for_every_point():
+    dmm = FakeDMM(readings=[6.0] * 9)
     src = FakeSource()
 
     _measure_branch(
         dmm, src,
-        I_start=0, I_stop=0, I_step=1,
+        I_start=0, I_stop=2, I_step=1,
         delay=0, cooling_delay=0,
-        sign=-1, branch_name='reverse', range_reset=True,
+        sign=+1, branch_name='forward',
     )
 
-    assert dmm.range_idx == len(dmm.ranges) - 1
-    assert dmm.set_range_calls[0] == dmm.ranges[-1]
+    assert src.output_count('output_on') == 3
+    assert src.output_count('output_off') == 3
+
+
+def test_measure_branch_turns_output_off_when_reading_explodes():
+    """
+    Безопасность: неожиданная ошибка внутри точки не должна оставить ток
+    включённым в датчике — output_off стоит в finally.
+    """
+    class ExplodingDMM:
+        def measure_voltage(self):
+            raise KeyboardInterrupt("оператор прервал")
+
+    src = FakeSource()
+
+    with pytest.raises(KeyboardInterrupt):
+        _measure_branch(
+            ExplodingDMM(), src,
+            I_start=0, I_stop=0, I_step=1,
+            delay=0, cooling_delay=0,
+            sign=+1, branch_name='forward',
+        )
+
+    assert ('output_off',) in src.calls
+
+
+def test_measure_branch_rejects_nonpositive_step():
+    """Нулевой/отрицательный шаг раньше давал деление на ноль при расчёте числа точек."""
+    dmm = FakeDMM(readings=[6.0] * 9)
+    src = FakeSource()
+
+    with pytest.raises(ValueError):
+        _measure_branch(
+            dmm, src,
+            I_start=0, I_stop=2, I_step=0,
+            delay=0, cooling_delay=0,
+            sign=+1, branch_name='forward',
+        )
+
+
+def test_measure_branch_stops_on_request():
+    dmm = FakeDMM(readings=[6.0] * 30)
+    src = FakeSource()
+
+    results = _measure_branch(
+        dmm, src,
+        I_start=0, I_stop=5, I_step=1,
+        delay=0, cooling_delay=0,
+        sign=+1, branch_name='forward',
+        should_stop=lambda: True,
+    )
+
+    assert results == []
 
 
 def test_run_measurement_runs_forward_then_reverse_and_shuts_down():
@@ -202,4 +259,23 @@ def test_run_measurement_shuts_down_source_and_relay_even_on_failure():
         )
 
     assert ('shutdown',) in src.calls
+    assert 'off' in relay.calls
+
+
+def test_run_measurement_switches_relay_off_even_if_source_shutdown_fails():
+    """
+    Регрессия: src.shutdown() и relay.off() стояли подряд в одном finally,
+    поэтому исключение на выключении источника оставляло реле под
+    напряжением. Теперь оба выключения независимы.
+    """
+    dmm = FakeDMM(readings=[6.0] * 100)
+    src = FakeSource(fail_on='shutdown')
+    relay = FakeRelay()
+
+    run_measurement(
+        dmm, src, relay,
+        I_start=0, I_stop=0, I_step=1,
+        V_limit=5.0, delay=0, cooling_delay=0,
+    )
+
     assert 'off' in relay.calls

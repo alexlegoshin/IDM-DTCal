@@ -29,11 +29,15 @@ class FakeVisaResource:
     idn: если задан, возвращается на query('*IDN?').
     query_responses: очередь ответов на прочие query(); каждый элемент —
     либо строка-ответ, либо инстанс исключения (тогда он поднимается).
+    fail_writes: префиксы команд, на которых write() бросает исключение —
+    моделирует прибор, не поддерживающий часть SCPI-набора (например, нет
+    аппаратного автодиапазона).
     """
 
-    def __init__(self, idn: str = None, query_responses=None):
+    def __init__(self, idn: str = None, query_responses=None, fail_writes=()):
         self.idn = idn
         self.query_responses = list(query_responses or [])
+        self.fail_writes = tuple(fail_writes)
         self.written = []
         self.queried = []
         self.encoding = None
@@ -41,6 +45,9 @@ class FakeVisaResource:
         self.closed = False
 
     def write(self, cmd: str):
+        for prefix in self.fail_writes:
+            if cmd.upper().startswith(prefix.upper()):
+                raise RuntimeError(f"FakeVisaResource: команда {cmd!r} не поддерживается прибором")
         self.written.append(cmd)
 
     def query(self, cmd: str) -> str:

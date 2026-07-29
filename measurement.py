@@ -3,25 +3,27 @@ import time
 from datetime import datetime
 from typing import Callable, List, Dict, Optional
 
-import pyvisa
-
 from instruments import CurrentSource
 from instruments import Multimeter as DMM
 from relay import RelayController
+
+
+READS_PER_POINT = 3
 
 
 def _measure_branch(dmm: DMM, src: CurrentSource,
                      I_start: float, I_stop: float, I_step: float,
                      delay: float, cooling_delay: float,
                      sign: int, branch_name: str,
-                     range_reset: bool = False,
                      should_stop: Optional[Callable[[], bool]] = None) -> List[Dict]:
     """
     Выполняет один проход измерения (0..I_max) для уже установленного реле
     (направление задаётся снаружи через relay.forward()/reverse()).
 
     Возбуждение всегда током (src.set_current). Измеряемая величина —
-    выходное напряжение датчика (мультиметр в режиме SENS:VOLT:DC).
+    выходное напряжение датчика. Диапазоном вольтметра здесь не управляем:
+    выход датчика всегда лежит в 2..10 В, диапазон один раз настраивается
+    при инициализации прибора (аппаратный автодиапазон, см. instruments.py).
     sign используется для записи знака в I_set.
 
     should_stop — необязательный колбэк без аргументов; если он возвращает
@@ -29,14 +31,11 @@ def _measure_branch(dmm: DMM, src: CurrentSource,
     предыдущем шаге). Используется GUI для кнопки «Стоп»; при None (по
     умолчанию, как в CLI) поведение прежнее.
     """
+    if I_step <= 0:
+        raise ValueError(f"Шаг тока должен быть положительным, получено {I_step}")
+
     num_steps = int(round((I_stop - I_start) / I_step)) + 1
     results = []
-
-    if range_reset:
-        # При смене направления датчик перемагничивается заново, поэтому
-        # выбор диапазона вольтметра лучше начать заново с первой точки.
-        dmm.range_idx = len(dmm.ranges) - 1
-        dmm.set_range(dmm.ranges[dmm.range_idx])
 
     for step in range(num_steps):
         if should_stop is not None and should_stop():
@@ -48,36 +47,28 @@ def _measure_branch(dmm: DMM, src: CurrentSource,
 
         src.set_current(abs_value)
         src.output_on()
-        time.sleep(delay)
+        try:
+            time.sleep(delay)
 
-        voltages = []
-        for _ in range(3):
-            try:
-                v = dmm.measure_voltage()
-                voltages.append(v)
-            except pyvisa.errors.VisaIOError:
-                if dmm.range_idx < len(dmm.ranges) - 1:
-                    dmm.range_idx += 1
-                    dmm.set_range(dmm.ranges[dmm.range_idx])
-                    try:
-                        v = dmm.measure_voltage()
-                        voltages.append(v)
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+            voltages = []
+            for _ in range(READS_PER_POINT):
+                try:
+                    voltages.append(dmm.measure_voltage())
+                except Exception as e:
+                    print(f"  [{branch_name}] чтение не удалось: {e}")
+        finally:
+            # Выход источника снимаем всегда, даже если чтение свалилось с
+            # неожиданной ошибкой: оставить ток в датчике нельзя.
+            src.output_off()
 
         if voltages:
             v_avg = sum(voltages) / len(voltages)
-            dmm.auto_range(v_avg, is_first=(step == 0))
         else:
             # Все попытки чтения провалились — точку помечаем NaN, а не
             # тихим нулём, чтобы не выдать сбой связи за реальный провал
-            # характеристики. auto_range не трогаем: нет данных, по которым
-            # выбирать диапазон.
+            # характеристики.
             v_avg = math.nan
 
-        src.output_off()
         time.sleep(cooling_delay)
 
         results.append({
@@ -132,10 +123,18 @@ def run_measurement(dmm: DMM, src: CurrentSource, relay: RelayController,
         print(f"  Ответ реле: {resp}")
         results += _measure_branch(
             dmm, src, I_start, I_stop, I_step, delay, cooling_delay,
-            sign=-1, branch_name='reverse', range_reset=True, should_stop=should_stop,
+            sign=-1, branch_name='reverse', should_stop=should_stop,
         )
     finally:
-        src.shutdown()
-        relay.off()
+        # Оба выключения — независимо друг от друга: сбой снятия выхода
+        # источника не должен оставить реле под напряжением, и наоборот.
+        try:
+            src.shutdown()
+        except Exception as e:
+            print(f"  ВНИМАНИЕ: сбой выключения источника: {e}")
+        try:
+            relay.off()
+        except Exception as e:
+            print(f"  ВНИМАНИЕ: сбой выключения реле: {e}")
 
     return results

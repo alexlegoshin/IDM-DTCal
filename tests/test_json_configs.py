@@ -24,9 +24,13 @@ def test_all_json_configs_are_valid_json(instruments_dir):
 
 @pytest.mark.parametrize("get_files", [_multimeter_configs])
 def test_multimeter_configs_have_required_keys(instruments_dir, get_files):
+    required = (
+        "model_name", "keywords", "init_commands", "measure_command", "ranges",
+        "autorange_command", "range_command",
+    )
     for f in get_files(instruments_dir):
         cfg = _load(f)
-        for key in ("model_name", "keywords", "init_commands", "measure_command", "ranges"):
+        for key in required:
             assert key in cfg, f"{f.name}: отсутствует ключ '{key}'"
         assert isinstance(cfg["keywords"], list) and cfg["keywords"], f"{f.name}: keywords пуст"
         assert isinstance(cfg["ranges"], list) and cfg["ranges"], f"{f.name}: ranges пуст"
@@ -41,32 +45,56 @@ def test_multimeter_ranges_are_strictly_ascending(instruments_dir):
         assert all(r > 0 for r in ranges), f"{f.name}: диапазоны должны быть положительными"
 
 
-def test_multimeter_measure_command_does_not_reset_range(instruments_dir):
+def test_multimeter_measure_command_is_a_query(instruments_dir):
     """
-    Регрессия ключевого бага: MEAS?/CONF? по SCPI переконфигурируют прибор и
-    сбрасывают диапазон в AUTO при каждом чтении, из-за чего ручной
-    set_range()/auto_range() в instruments.py/measurement.py перестают
-    работать. measure_command обязан быть READ?/FETC?.
+    Команда чтения обязана быть запросом (оканчиваться на '?'), иначе
+    instr.query() зависнет в ожидании ответа до таймаута.
     """
     for f in _multimeter_configs(instruments_dir):
         cfg = _load(f)
-        cmd = cfg["measure_command"].strip().upper()
-        assert not cmd.startswith("MEAS"), f"{f.name}: measure_command не должен быть MEAS? (сбрасывает диапазон)"
-        assert not cmd.startswith("CONF"), f"{f.name}: measure_command не должен быть CONF? (сбрасывает диапазон)"
-        assert cmd in ("READ?", "FETC?", "FETCH?"), f"{f.name}: неожиданный measure_command {cmd!r}"
+        cmd = cfg["measure_command"].strip()
+        assert cmd.endswith("?"), f"{f.name}: measure_command должен быть запросом, получено {cmd!r}"
+        fallback = cfg.get("fallback_measure_command")
+        if fallback:
+            assert fallback.strip().endswith("?"), \
+                f"{f.name}: fallback_measure_command должен быть запросом, получено {fallback!r}"
 
 
-def test_multimeter_init_disables_autorange(instruments_dir):
+def test_multimeter_init_does_not_disable_autorange(instruments_dir):
     """
-    Без явного отключения автодиапазона ручное управление диапазоном
-    (Multimeter.set_range/auto_range) может конкурировать с автоматикой
-    прибора между измерениями.
+    Инверсия политики IVTrace (осознанная, не регресс).
+
+    В IVTrace измерялся ток в диапазоне нескольких декад, диапазон вёлся
+    вручную, поэтому init_commands обязаны были содержать RANG:AUTO OFF, а
+    measure_command — быть READ?/FETC?, чтобы MEAS? не сбрасывал шкалу.
+
+    В DTCal измеряется выход датчика, всегда лежащий в 2..10 В. Ручное
+    ведение диапазона не нужно, а ошибиться в массиве ranges легко (у
+    Picotest шкалы 0.1/1/10/100/1000, у Siglent и Rigol — 0.2/2/20/200/1000).
+    Поэтому основной режим — аппаратный автодиапазон прибора, и явное
+    отключение автодиапазона в init_commands запрещено: оно бы его гасило.
+    Фиксированный диапазон остаётся резервом (Multimeter._setup_ranging).
     """
     for f in _multimeter_configs(instruments_dir):
         cfg = _load(f)
-        commands_upper = [c.upper() for c in cfg["init_commands"]]
-        assert any("RANG:AUTO" in c and "OFF" in c for c in commands_upper), \
-            f"{f.name}: init_commands должны явно отключать авто-диапазон (RANG:AUTO OFF)"
+        for cmd in cfg["init_commands"]:
+            upper = cmd.upper()
+            assert not ("RANG" in upper and "AUTO" in upper and "OFF" in upper), \
+                f"{f.name}: init_commands не должны отключать автодиапазон ({cmd!r})"
+
+
+def test_multimeter_range_command_has_a_substitution_placeholder(instruments_dir):
+    """
+    range_command подставляется через str.format(range=..., index=...).
+    Шаблон без плейсхолдера молча отправлял бы одну и ту же команду.
+    """
+    for f in _multimeter_configs(instruments_dir):
+        cfg = _load(f)
+        template = cfg["range_command"]
+        assert "{range}" in template or "{index}" in template, \
+            f"{f.name}: range_command должен содержать {{range}} или {{index}}, получено {template!r}"
+        # Шаблон обязан быть форматируемым без KeyError.
+        template.format(range=10.0, index=2)
 
 
 def test_current_source_configs_have_required_keys(instruments_dir):

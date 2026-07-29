@@ -1,0 +1,18 @@
+{
+    "model_name": "Rigol DM3068 (серия DM3000)",
+    "keywords": ["RIGOL", "DM3068", "DM3058", "DM3064", "DM3054"],
+    "notes": "Проверено вживую в стенде IDM-DNKMeter: USB0::0x1AB1::0x0C94::<serial>::INSTR, *IDN? и MEAS:VOLT:DC? отвечают корректно. Синтаксис сверен по Programming Guide for DM3000: ':FUNCtion:VOLTage:DC' включает режим DCV (без кавычек, в отличие от Siglent), ':MEASure {AUTO|MANU}' переключает авто/ручной диапазон (по умолчанию AUTO), ':MEASure:VOLTage:DC {0|1|2|3|4}' задаёт диапазон ИНДЕКСОМ шкалы и принудительно уводит прибор в Manual, поэтому здесь используется плейсхолдер {index}, а не {range}.",
+    "timeout": 5000,
+    "encoding": "utf-8",
+    "write_termination": "\n",
+    "read_termination": "\n",
+    "init_commands": [
+        "*RST",
+        ":FUNCtion:VOLTage:DC"
+    ],
+    "autorange_command": ":MEASure AUTO",
+    "range_command": ":MEASure:VOLTage:DC {index}",
+    "measure_command": ":MEASure:VOLTage:DC?",
+    "fallback_measure_command": "READ?",
+    "ranges": [0.2, 2.0, 20.0, 200.0, 1000.0]
+}
