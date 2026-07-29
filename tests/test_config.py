@@ -2,14 +2,15 @@ from config import ConfigManager
 
 
 def test_save_and_load_round_trip(tmp_path):
-    cfg_path = tmp_path / "sub" / "ivtrace_config.json"
+    cfg_path = tmp_path / "sub" / "dtcal_config.json"
     mgr = ConfigManager(cfg_path)
 
     data = {
-        'excitation_type': 'current',
-        'X_start': 0.0, 'X_stop': 100.0, 'X_step': 5.0,
+        'model': 'ДТ100А1',
+        'i_nom': 100.0,
+        'I_start': 0.0, 'I_stop': 100.0, 'I_step': 5.0,
         'V_limit': 3.0, 'delay': 1.0, 'cooling_delay': 1.5,
-        'label': 'VAC 4646X100',
+        'label': 'TestSensor',
     }
     mgr.save(data)
 

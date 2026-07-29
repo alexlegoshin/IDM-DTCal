@@ -7,7 +7,7 @@ import pyvisa
 
 
 class Multimeter:
-    """Обёртка над вольтметром/мультиметром, измеряющим ток (АКИП-2101, АКИП-B7-78/1 и т.п.)."""
+    """Обёртка над вольтметром/мультиметром, измеряющим выходное напряжение датчика (АКИП-2101, АКИП-B7-78/1 и т.п.)."""
 
     def __init__(self, resource_addr: str, config_path: Path, rm: Optional[pyvisa.ResourceManager] = None):
         self.config = json.loads(Path(config_path).read_text(encoding='utf-8'))
@@ -16,7 +16,7 @@ class Multimeter:
         self.instr.encoding = self.config.get('encoding', 'utf-8')
         self.instr.timeout = self.config.get('timeout', 5000)
         self.ranges = self.config['ranges']
-        self.current_range_idx = len(self.ranges) - 1  # начинаем с максимального
+        self.range_idx = len(self.ranges) - 1  # начинаем с максимального
         self._init_device()
 
     def _init_device(self):
@@ -24,13 +24,13 @@ class Multimeter:
             self.instr.write(cmd)
             time.sleep(0.5 if cmd.strip() == '*RST' else 0.1)
         # Устанавливаем начальный (максимальный) диапазон
-        self.set_range(self.ranges[self.current_range_idx])
+        self.set_range(self.ranges[self.range_idx])
 
     def set_range(self, range_val: float):
-        self.instr.write(f'SENS:CURR:DC:RANG {range_val}')
+        self.instr.write(f'SENS:VOLT:DC:RANG {range_val}')
 
-    def measure_current(self) -> float:
-        # measure_command должен быть 'READ?' (или 'FETC?'), а не 'MEAS:CURR:DC?':
+    def measure_voltage(self) -> float:
+        # measure_command должен быть 'READ?' (или 'FETC?'), а не 'MEAS:VOLT:DC?':
         # MEAS?/CONF? по SCPI переконфигурируют прибор и сбрасывают диапазон
         # обратно в AUTO при каждом вызове, из-за чего set_range()/auto_range()
         # ниже становятся no-op. READ? использует уже выставленную конфигурацию
@@ -38,32 +38,32 @@ class Multimeter:
         cmd = self.config['measure_command']
         return float(self.instr.query(cmd))
 
-    def auto_range(self, measured_current: float, is_first: bool = False):
+    def auto_range(self, measured_voltage: float, is_first: bool = False):
         """
-        Динамическая подстройка диапазона по модулю измеренного тока.
+        Динамическая подстройка диапазона по модулю измеренного напряжения.
         При is_first=True выбирается наименьший диапазон, покрывающий измеренное значение.
         Иначе — подъём при >95% предела, спуск при <10% предела.
         """
-        abs_i = abs(measured_current)
+        abs_v = abs(measured_voltage)
         if is_first:
             for i, r in enumerate(self.ranges):
-                if r >= abs_i:
-                    self.current_range_idx = i
+                if r >= abs_v:
+                    self.range_idx = i
                     self.set_range(r)
                     return
-            # Ток больше всех известных пределов — остаёмся на максимальном
-            self.current_range_idx = len(self.ranges) - 1
-            self.set_range(self.ranges[self.current_range_idx])
+            # Напряжение больше всех известных пределов — остаёмся на максимальном
+            self.range_idx = len(self.ranges) - 1
+            self.set_range(self.ranges[self.range_idx])
         else:
-            current_limit = self.ranges[self.current_range_idx]
-            if abs_i > current_limit * 0.95:
-                if self.current_range_idx < len(self.ranges) - 1:
-                    self.current_range_idx += 1
-                    self.set_range(self.ranges[self.current_range_idx])
-            elif abs_i < current_limit * 0.1 and self.current_range_idx > 0:
-                for i in reversed(range(self.current_range_idx)):
-                    if self.ranges[i] >= abs_i:
-                        self.current_range_idx = i
+            current_limit = self.ranges[self.range_idx]
+            if abs_v > current_limit * 0.95:
+                if self.range_idx < len(self.ranges) - 1:
+                    self.range_idx += 1
+                    self.set_range(self.ranges[self.range_idx])
+            elif abs_v < current_limit * 0.1 and self.range_idx > 0:
+                for i in reversed(range(self.range_idx)):
+                    if self.ranges[i] >= abs_v:
+                        self.range_idx = i
                         self.set_range(self.ranges[i])
                         break
 
@@ -108,77 +108,6 @@ class CurrentSource:
 
     def shutdown(self):
         self.set_current(0)
-        self.output_off()
-
-    def close(self):
-        try:
-            self.instr.close()
-        except Exception:
-            pass
-
-
-class VoltageSource:
-    """
-    Обёртка над программируемым источником напряжения (GW Instek GPP-серия),
-    работающим в режиме Tracking Series (CH1 master + CH2 slave, без общей
-    точки) для получения объединённого диапазона 0..64В.
-
-    Все команды соответствуют официальной документации GW Instek
-    (GPP-Series_User_manual_EN_REVG_20240506.pdf, стр. 128, 133-135):
-      TRACK1               — включить tracking series
-      VSET<x>:<value>      — задать напряжение канала x (используется CH1=master)
-      ISET<x>:<value>      — задать токоограничение канала x
-      :OUTPut<x>:STATe ON  — включить выход канала x
-      VOUT<x>? / IOUT<x>?  — измеренные (фактические) значения канала x
-
-    ВАЖНО: IDN? прибора этой серии возвращает модель БЕЗ ведущей цифры,
-    например GPP-74323 представляется как "GPP-4323".
-    """
-
-    def __init__(self, resource_addr: str, config_path: Path, rm: Optional[pyvisa.ResourceManager] = None):
-        self.config = json.loads(Path(config_path).read_text(encoding='utf-8'))
-        self.rm = rm or pyvisa.ResourceManager()
-        self.instr = self.rm.open_resource(resource_addr)
-        self.instr.encoding = self.config.get('encoding', 'utf-8')
-        self.instr.timeout = self.config.get('timeout', 5000)
-        self.primary_ch = self.config.get('channels', {}).get('primary', 1)
-        self._init_device()
-
-    def _init_device(self):
-        for cmd in self.config['init_commands']:
-            self.instr.write(cmd)
-            time.sleep(0.5 if cmd.strip() == '*RST' else 0.1)
-        # Объединяем CH1(master)+CH2(slave) в tracking series: 0..64В на
-        # клеммах CH1(+) и CH2(-), без общей точки. Управление — только
-        # через CH1 (master); CH2 в этом режиме недоступен для настройки.
-        self.instr.write(self.config['tracking_series_command'])
-        time.sleep(0.2)
-
-    def setup(self, voltage_limit: float, current_limit: float = 1.0):
-        """
-        voltage_limit принимается для единообразия вызова с CurrentSource.setup()
-        (measurement.py вызывает src.setup(voltage_limit=...) для обоих типов
-        источника), но сейчас не используется: в конфиге GPP-серии нет
-        отдельной команды OVP/предела по напряжению — сама уставка (VSET)
-        каждый раз ограничена X_stop. current_limit — реальное ограничение
-        по току (защита источника через ISET).
-        """
-        cmds = self.config['setup_commands']
-        self.instr.write(cmds['current_limit'].format(ch=self.primary_ch, current=current_limit))
-        self.instr.write(cmds['voltage'].format(ch=self.primary_ch, voltage=0))
-
-    def set_voltage(self, voltage: float):
-        cmd = self.config['setup_commands']['voltage'].format(ch=self.primary_ch, voltage=voltage)
-        self.instr.write(cmd)
-
-    def output_on(self):
-        self.instr.write(self.config['output_on'].format(ch=self.primary_ch))
-
-    def output_off(self):
-        self.instr.write(self.config['output_off'].format(ch=self.primary_ch))
-
-    def shutdown(self):
-        self.set_voltage(0)
         self.output_off()
 
     def close(self):

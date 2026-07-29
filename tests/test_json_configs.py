@@ -15,10 +15,6 @@ def _current_source_configs(instruments_dir):
     return sorted((instruments_dir / "current_sources").glob("*.json"))
 
 
-def _voltage_source_configs(instruments_dir):
-    return sorted((instruments_dir / "voltage_sources").glob("*.json"))
-
-
 def test_all_json_configs_are_valid_json(instruments_dir):
     files = list(instruments_dir.glob("**/*.json"))
     assert files, "Не найдено ни одного конфига приборов"
@@ -82,22 +78,9 @@ def test_current_source_configs_have_required_keys(instruments_dir):
             assert key in cfg["setup_commands"], f"{f.name}: setup_commands.{key} отсутствует"
 
 
-def test_voltage_source_configs_have_required_keys(instruments_dir):
-    for f in _voltage_source_configs(instruments_dir):
-        cfg = _load(f)
-        for key in ("model_name", "keywords", "init_commands", "channels",
-                    "tracking_series_command", "setup_commands", "output_on", "output_off"):
-            assert key in cfg, f"{f.name}: отсутствует ключ '{key}'"
-        assert "primary" in cfg["channels"], f"{f.name}: channels.primary отсутствует"
-        for key in ("voltage", "current_limit"):
-            assert key in cfg["setup_commands"], f"{f.name}: setup_commands.{key} отсутствует"
-        assert "{ch}" in cfg["output_on"], f"{f.name}: output_on должен параметризоваться по каналу"
-        assert "{ch}" in cfg["output_off"], f"{f.name}: output_off должен параметризоваться по каналу"
-
-
 def test_all_configs_have_distinct_nonempty_keywords_within_their_directory(instruments_dir):
     """keywords не должны пересекаться внутри одной папки — иначе find_config_for_idn неоднозначен."""
-    for get_files in (_multimeter_configs, _current_source_configs, _voltage_source_configs):
+    for get_files in (_multimeter_configs, _current_source_configs):
         files = get_files(instruments_dir)
         seen = {}
         for f in files:

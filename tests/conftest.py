@@ -1,9 +1,3 @@
-# Headless backend — тесты не должны открывать окна графиков и должны
-# работать в CI/без дисплея. Должно быть установлено до первого импорта
-# analysis.py (который импортирует matplotlib.pyplot на уровне модуля).
-import matplotlib
-matplotlib.use("Agg")
-
 from pathlib import Path
 
 import pytest

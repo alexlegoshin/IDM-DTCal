@@ -3,15 +3,11 @@ import json
 import pytest
 
 from instruments import (
-    Multimeter, CurrentSource, VoltageSource,
+    Multimeter, CurrentSource,
     find_config_for_idn, discover_instruments,
 )
 from tests.conftest import FakeVisaResource, FakeResourceManager
 
-
-# ----------------------------------------------------------------------
-# find_config_for_idn
-# ----------------------------------------------------------------------
 
 def test_find_config_for_idn_matches_by_keyword(instruments_dir):
     cfg = find_config_for_idn("Instrument reply: SIGLENT,SDM3055,...", instruments_dir / "multimeters")
@@ -30,17 +26,6 @@ def test_find_config_for_idn_no_match_returns_none(instruments_dir):
     assert cfg is None
 
 
-def test_gpp_idn_missing_leading_digit_still_matches(instruments_dir):
-    # Задокументированный в README нюанс: GPP-74323 отвечает как "GPP-4323".
-    cfg = find_config_for_idn("GW,GPP-4323,SN123,1.0", instruments_dir / "voltage_sources")
-    assert cfg is not None
-    assert cfg.name == "gpp74323.json"
-
-
-# ----------------------------------------------------------------------
-# Multimeter — регрессия на баг с MEAS?/READ? и авто-диапазоном
-# ----------------------------------------------------------------------
-
 @pytest.fixture
 def akip2101_cfg(instruments_dir):
     return instruments_dir / "multimeters" / "akip2101.json"
@@ -56,15 +41,14 @@ def test_multimeter_init_sends_init_commands_and_max_range(akip2101_cfg, make_fa
     for cmd in cfg['init_commands']:
         assert cmd in fake.written
 
-    # Стартовый диапазон — максимальный.
     max_range = cfg['ranges'][-1]
-    assert dmm.current_range_idx == len(cfg['ranges']) - 1
-    assert fake.written[-1] == f'SENS:CURR:DC:RANG {max_range}'
+    assert dmm.range_idx == len(cfg['ranges']) - 1
+    assert fake.written[-1] == f'SENS:VOLT:DC:RANG {max_range}'
 
 
 def test_multimeter_measure_command_is_read_not_meas(akip2101_cfg):
     """
-    Регрессия: MEAS:CURR:DC?/CONF? по SCPI сбрасывают диапазон обратно в
+    Регрессия: MEAS:VOLT:DC?/CONF? по SCPI сбрасывают диапазон обратно в
     AUTO при каждом вызове, из-за чего ручной auto_range()/set_range()
     переставали иметь эффект. Конфиг обязан использовать READ?/FETC?.
     """
@@ -74,14 +58,14 @@ def test_multimeter_measure_command_is_read_not_meas(akip2101_cfg):
     assert not cmd.startswith('CONF'), "CONF? сбрасывает диапазон прибора в AUTO при каждом чтении"
 
 
-def test_multimeter_measure_current_uses_configured_command(akip2101_cfg, make_fake_rm):
-    fake = FakeVisaResource(query_responses=["0.001234"])
+def test_multimeter_measure_voltage_uses_configured_command(akip2101_cfg, make_fake_rm):
+    fake = FakeVisaResource(query_responses=["10.001234"])
     rm = make_fake_rm({"FAKE::ADDR": fake})
 
     dmm = Multimeter("FAKE::ADDR", akip2101_cfg, rm=rm)
-    value = dmm.measure_current()
+    value = dmm.measure_voltage()
 
-    assert value == pytest.approx(0.001234)
+    assert value == pytest.approx(10.001234)
     assert fake.queried[-1] == "READ?"
 
 
@@ -90,9 +74,9 @@ def test_auto_range_is_first_picks_smallest_covering_range(akip2101_cfg, make_fa
     rm = make_fake_rm({"FAKE::ADDR": fake})
     dmm = Multimeter("FAKE::ADDR", akip2101_cfg, rm=rm)
 
-    dmm.auto_range(0.015, is_first=True)
-    assert dmm.ranges[dmm.current_range_idx] == 0.02
-    assert fake.written[-1] == 'SENS:CURR:DC:RANG 0.02'
+    dmm.auto_range(1.5, is_first=True)
+    assert dmm.ranges[dmm.range_idx] == 2.0
+    assert fake.written[-1] == 'SENS:VOLT:DC:RANG 2.0'
 
 
 def test_auto_range_is_first_falls_back_to_max_when_over_range(akip2101_cfg, make_fake_rm):
@@ -101,7 +85,7 @@ def test_auto_range_is_first_falls_back_to_max_when_over_range(akip2101_cfg, mak
     dmm = Multimeter("FAKE::ADDR", akip2101_cfg, rm=rm)
 
     dmm.auto_range(999.0, is_first=True)
-    assert dmm.current_range_idx == len(dmm.ranges) - 1
+    assert dmm.range_idx == len(dmm.ranges) - 1
 
 
 def test_auto_range_steps_up_above_95_percent(akip2101_cfg, make_fake_rm):
@@ -109,10 +93,10 @@ def test_auto_range_steps_up_above_95_percent(akip2101_cfg, make_fake_rm):
     rm = make_fake_rm({"FAKE::ADDR": fake})
     dmm = Multimeter("FAKE::ADDR", akip2101_cfg, rm=rm)
 
-    dmm.current_range_idx = 2  # range 0.02
-    dmm.auto_range(0.0195, is_first=False)  # > 95% of 0.02
-    assert dmm.current_range_idx == 3
-    assert fake.written[-1] == f'SENS:CURR:DC:RANG {dmm.ranges[3]}'
+    dmm.range_idx = 2  # range 20.0
+    dmm.auto_range(19.5, is_first=False)  # > 95% of 20.0
+    assert dmm.range_idx == 3
+    assert fake.written[-1] == f'SENS:VOLT:DC:RANG {dmm.ranges[3]}'
 
 
 def test_auto_range_steps_down_below_10_percent(akip2101_cfg, make_fake_rm):
@@ -120,9 +104,9 @@ def test_auto_range_steps_down_below_10_percent(akip2101_cfg, make_fake_rm):
     rm = make_fake_rm({"FAKE::ADDR": fake})
     dmm = Multimeter("FAKE::ADDR", akip2101_cfg, rm=rm)
 
-    dmm.current_range_idx = 3  # range 0.2
-    dmm.auto_range(0.001, is_first=False)  # < 10% of 0.2 -> шаг вниз на один диапазон (0.02), не к минимально достаточному
-    assert dmm.ranges[dmm.current_range_idx] == 0.02
+    dmm.range_idx = 3  # range 200.0
+    dmm.auto_range(1.0, is_first=False)  # < 10% of 200.0 -> шаг вниз
+    assert dmm.ranges[dmm.range_idx] == 20.0
 
 
 def test_auto_range_stays_put_within_normal_band(akip2101_cfg, make_fake_rm):
@@ -130,10 +114,10 @@ def test_auto_range_stays_put_within_normal_band(akip2101_cfg, make_fake_rm):
     rm = make_fake_rm({"FAKE::ADDR": fake})
     dmm = Multimeter("FAKE::ADDR", akip2101_cfg, rm=rm)
 
-    dmm.current_range_idx = 3  # range 0.2
-    before = dmm.current_range_idx
-    dmm.auto_range(0.05, is_first=False)  # between 10% and 95% of 0.2
-    assert dmm.current_range_idx == before
+    dmm.range_idx = 3  # range 200.0
+    before = dmm.range_idx
+    dmm.auto_range(50.0, is_first=False)  # between 10% and 95% of 200.0
+    assert dmm.range_idx == before
 
 
 def test_multimeter_close_does_not_raise(akip2101_cfg, make_fake_rm):
@@ -143,10 +127,6 @@ def test_multimeter_close_does_not_raise(akip2101_cfg, make_fake_rm):
     dmm.close()
     assert fake.closed is True
 
-
-# ----------------------------------------------------------------------
-# CurrentSource / VoltageSource
-# ----------------------------------------------------------------------
 
 def test_current_source_setup_sends_voltage_limit_and_zero_current(instruments_dir, make_fake_rm):
     cfg_path = instruments_dir / "current_sources" / "akip1162.json"
@@ -188,42 +168,6 @@ def test_current_source_shutdown_zeroes_and_turns_off(instruments_dir, make_fake
     assert fake.written == ["SOUR:CURR 0", "OUTP OFF"]
 
 
-def test_voltage_source_init_enables_tracking_series(instruments_dir, make_fake_rm):
-    cfg_path = instruments_dir / "voltage_sources" / "gpp74323.json"
-    fake = FakeVisaResource()
-    rm = make_fake_rm({"A": fake})
-
-    src = VoltageSource("A", cfg_path, rm=rm)
-    assert fake.written[-1] == "TRACK1"
-    assert src.primary_ch == 1
-
-
-def test_voltage_source_set_voltage_uses_primary_channel(instruments_dir, make_fake_rm):
-    cfg_path = instruments_dir / "voltage_sources" / "gpp74323.json"
-    fake = FakeVisaResource()
-    rm = make_fake_rm({"A": fake})
-
-    src = VoltageSource("A", cfg_path, rm=rm)
-    src.set_voltage(12.5)
-    assert fake.written[-1] == "VSET1:12.5"
-
-
-def test_voltage_source_output_on_off_uses_primary_channel(instruments_dir, make_fake_rm):
-    cfg_path = instruments_dir / "voltage_sources" / "gpp74323.json"
-    fake = FakeVisaResource()
-    rm = make_fake_rm({"A": fake})
-
-    src = VoltageSource("A", cfg_path, rm=rm)
-    src.output_on()
-    src.output_off()
-    assert ":OUTPut1:STATe ON" in fake.written
-    assert ":OUTPut1:STATe OFF" in fake.written
-
-
-# ----------------------------------------------------------------------
-# discover_instruments
-# ----------------------------------------------------------------------
-
 def test_discover_instruments_finds_dmm_and_source(instruments_dir):
     dmm_res = FakeVisaResource(idn="SIGLENT,SDM3055,SN001,1.0")
     src_res = FakeVisaResource(idn="ITECH,IT-M3122,SN002,1.0")
@@ -240,7 +184,6 @@ def test_discover_instruments_finds_dmm_and_source(instruments_dir):
 
 
 def test_discover_instruments_raises_when_no_resources(instruments_dir):
-    from tests.conftest import FakeResourceManager
     rm = FakeResourceManager({})
     with pytest.raises(RuntimeError):
         discover_instruments(instruments_dir / "multimeters", instruments_dir / "current_sources", rm=rm)

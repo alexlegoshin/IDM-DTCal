@@ -33,10 +33,6 @@ def current_source_cfg_dir() -> Path:
     return instruments_dir() / "current_sources"
 
 
-def voltage_source_cfg_dir() -> Path:
-    return instruments_dir() / "voltage_sources"
-
-
 def tests_dir() -> Path:
     return resource_base() / "tests"
 

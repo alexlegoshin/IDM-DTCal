@@ -9,7 +9,6 @@ def test_instruments_dirs_point_to_real_folders():
     assert apppaths.instruments_dir().is_dir()
     assert apppaths.multimeter_cfg_dir().is_dir()
     assert apppaths.current_source_cfg_dir().is_dir()
-    assert apppaths.voltage_source_cfg_dir().is_dir()
 
 
 def test_tests_dir_is_this_folder():

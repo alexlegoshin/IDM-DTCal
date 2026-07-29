@@ -1,24 +1,20 @@
 #!/usr/bin/env python
 """
-IVtrace — приложение для автоматизированного снятия амплитудной
-характеристики датчиков тока/напряжения. Работает и как CLI, и как GUI.
+DTCal — снятие характеристики датчиков ДТ100А1/ДТ500А1 (вход — ток, выход —
+напряжение). Работает и как CLI, и как GUI.
 
 Запуск GUI (по умолчанию, без аргументов или подкомандой gui):
     python run.py
     python run.py gui
 
 Измерение из CLI:
-    python run.py measure --excitation current --start 0 --stop 10 --step 0.5 --vlimit 5 \
-        --delay 0.2 --cool 0.5 --label "Sensor1"
-
-    python run.py measure --excitation voltage --start 0 --stop 64 --step 5 \
-        --delay 1 --cool 0.5 --label "VoltageSensor1"
-
-Анализ:
-    python run.py analyze --inom 150 --ratio 1500
+    python run.py measure --model DT100A1 --start 0 --stop 100 --step 5 \
+        --vlimit 5 --delay 1 --cool 1 --label "Sensor1"
 
 Измерение автоматически проходит обе полярности (forward/reverse) за один
-запуск — переключение направления делает плата реле.
+запуск — переключение направления делает плата реле. Результат (данные +
+ожидаемое напряжение + приведённая погрешность со знаком) пишется в один
+.xlsx.
 
 Перед реальной работой с железом (measure/GUI) выполняется предполётная
 проверка: (1) доступность NI-VISA и (2) виртуальные самотесты кода. При
@@ -28,9 +24,8 @@ IVtrace — приложение для автоматизированного �
 import sys
 
 from apppaths import default_data_dir
-from cli import build_parser, resolve_measure_params, make_csv_filename
+from cli import build_parser, resolve_measure_params, make_result_filename
 from config import ConfigManager
-from analysis import load_and_analyze, find_latest_csv
 
 
 def preflight(skip_selftest: bool = False) -> tuple:
@@ -70,7 +65,7 @@ def preflight(skip_selftest: bool = False) -> tuple:
 def cmd_measure(args) -> int:
     data_dir = args.data_dir
     data_dir.mkdir(parents=True, exist_ok=True)
-    config_mgr = ConfigManager(data_dir / "ivtrace_config.json")
+    config_mgr = ConfigManager(data_dir / "dtcal_config.json")
 
     try:
         params = resolve_measure_params(args, config_mgr)
@@ -78,16 +73,12 @@ def cmd_measure(args) -> int:
         print(f"Ошибка параметров: {e}")
         return 1
 
-    from measurement import EXCITATION_UNITS
-    excitation_type = params['excitation_type']
-    unit = EXCITATION_UNITS[excitation_type]
-
-    csv_path = make_csv_filename(data_dir, params['label'])
-    print(f"\nФайл результатов: {csv_path}")
-    print(f"Возбуждение: {excitation_type} ({unit}), диапазон {params['X_start']}..{params['X_stop']} {unit}, "
-          f"шаг {params['X_step']} {unit} (обе полярности через реле)")
-    if excitation_type == 'current':
-        print(f"Ограничение напряжения источника: {params['V_limit']} В")
+    xlsx_path = make_result_filename(data_dir, params['model'], params['label'])
+    print(f"\nФайл результатов: {xlsx_path}")
+    print(f"Датчик: {params['model']} (I ном. {params['i_nom']} А)")
+    print(f"Возбуждение: ток, диапазон {params['I_start']}..{params['I_stop']} А, "
+          f"шаг {params['I_step']} А (обе полярности через реле)")
+    print(f"Ограничение напряжения источника: {params['V_limit']} В")
     print(f"Комментарий: {params['label']}")
     print(f"Задержка установки: {params['delay']} с, задержка охлаждения: {params['cooling_delay']} с\n")
 
@@ -110,7 +101,7 @@ def cmd_measure(args) -> int:
 
     try:
         df = run_measurement_session(
-            rm, params, csv_path,
+            rm, params, xlsx_path,
             dmm_addr=args.dmm_addr, src_addr=args.src_addr, relay_port=args.relay_port,
             log=print,
         )
@@ -125,45 +116,8 @@ def cmd_measure(args) -> int:
 
     print()
     print(df.head(10).to_string(index=False))
-    return 0
-
-
-def cmd_analyze(args) -> int:
-    data_dir = args.data_dir
-
-    csv_path = args.file if args.file else find_latest_csv(data_dir)
-    print(f"Файл: {csv_path}")
-
-    I_nom = args.inom
-    if I_nom is None:
-        while True:
-            try:
-                I_nom = float(input("Номинальный первичный ток датчика (А, напр. 150): "))
-                if I_nom <= 0:
-                    print("Ток должен быть положительным.")
-                    continue
-                break
-            except ValueError:
-                print("Введите число.")
-
-    X = args.ratio
-    if X is None:
-        while True:
-            try:
-                X = float(input("Коэффициент преобразования 1:X, введите X (напр. 1500): "))
-                if X <= 0:
-                    print("X должен быть положительным.")
-                    continue
-                break
-            except ValueError:
-                print("Введите число.")
-
-    stats = load_and_analyze(csv_path, I_nom=I_nom, X=X, show=not args.no_show)
-
-    print(f"\nГрафик сохранён: {stats['png_path']}")
-    print(f"Максимальная приведённая погрешность: {stats['max_error_percent']:.4f} %")
-    print(f"Средняя приведённая погрешность:   {stats['mean_error_percent']:.4f} %")
-
+    print(f"\nМаксимальная приведённая погрешность: {df['Error_percent'].abs().max():.4f} %")
+    print(f"Средняя приведённая погрешность (со знаком): {df['Error_percent'].mean():.4f} %")
     return 0
 
 
@@ -199,8 +153,6 @@ def main(argv=None) -> int:
         return cmd_gui(args)
     if args.command == "measure":
         return cmd_measure(args)
-    if args.command == "analyze":
-        return cmd_analyze(args)
     if args.command == "selftest":
         return cmd_selftest(args)
 

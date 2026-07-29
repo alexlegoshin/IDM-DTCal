@@ -1,12 +1,12 @@
-# Сборка IVTrace в portable-приложение (Windows, onedir).
+# Сборка DTCal в portable-приложение (Windows, onedir).
 #
 # Запуск из корня проекта в PowerShell:
 #     .\build_windows.ps1
 #
-# Требуется активное окружение с зависимостями (см. requirements-dev.txt) и
+# Требуется активное окружение с зависимостями (см. requirements.txt) и
 # установленным pyinstaller. Скрипт использует текущий python из PATH.
-# Если работаете через conda-окружение IVTrace, сначала:
-#     conda activate IVTrace
+# Если работаете через conda-окружение DTCal, сначала:
+#     conda activate DTCal
 
 $ErrorActionPreference = "Stop"
 Set-Location -Path $PSScriptRoot
@@ -21,7 +21,7 @@ if ($env:CONDA_PREFIX) {
     $env:PATH = ($dllDirs -join ";") + ";" + $env:PATH
     Write-Host "Добавлены DLL-папки окружения: $ep" -ForegroundColor DarkGray
 } else {
-    Write-Host "ВНИМАНИЕ: CONDA_PREFIX не задан. Если используете conda, сначала: conda activate IVTrace" -ForegroundColor Yellow
+    Write-Host "ВНИМАНИЕ: CONDA_PREFIX не задан. Если используете conda, сначала: conda activate DTCal" -ForegroundColor Yellow
 }
 
 Write-Host "== Прогоняю самотесты перед сборкой ==" -ForegroundColor Cyan
@@ -36,12 +36,12 @@ if (Test-Path build) { Remove-Item build -Recurse -Force }
 if (Test-Path dist)  { Remove-Item dist  -Recurse -Force }
 
 Write-Host "== PyInstaller ==" -ForegroundColor Cyan
-pyinstaller ivtrace.spec --noconfirm
+pyinstaller dtcal.spec --noconfirm
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Сборка PyInstaller завершилась с ошибкой." -ForegroundColor Red
     exit 1
 }
 
 Write-Host ""
-Write-Host "Готово. Portable-приложение: dist\IVTrace\IVTrace.exe" -ForegroundColor Green
-Write-Host "Копируйте папку dist\IVTrace целиком." -ForegroundColor Green
+Write-Host "Готово. Portable-приложение: dist\DTCal\DTCal.exe" -ForegroundColor Green
+Write-Host "Копируйте папку dist\DTCal целиком." -ForegroundColor Green

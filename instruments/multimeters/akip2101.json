@@ -5,10 +5,10 @@
     "encoding": "utf-8",
     "init_commands": [
         "*RST",
-        "SENS:FUNC \"CURR:DC\"",
-        "SENS:CURR:DC:NPLC 1",
-        "SENS:CURR:DC:RANG:AUTO OFF"
+        "SENS:FUNC \"VOLT:DC\"",
+        "SENS:VOLT:DC:NPLC 1",
+        "SENS:VOLT:DC:RANG:AUTO OFF"
     ],
     "measure_command": "READ?",
-    "ranges": [0.0002, 0.002, 0.02, 0.2, 2.0, 10.0]
+    "ranges": [0.2, 2.0, 20.0, 200.0, 1000.0]
 }
