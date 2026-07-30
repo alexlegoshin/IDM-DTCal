@@ -1,6 +1,6 @@
 """
 Оркестрация одной сессии измерения: обнаружение/открытие приборов, прогон
-двусторонней характеристики и (необязательно) запись результата в Excel.
+двусторонней характеристики и (необязательно) запись первичных данных в Excel.
 
 Вынесено отдельно, чтобы один и тот же код использовали и CLI (run.py), и
 GUI (gui.py) — без дублирования логики работы с железом. Вся коммуникация с
@@ -20,7 +20,7 @@ from apppaths import multimeter_cfg_dir, current_source_cfg_dir
 from instruments import Multimeter, CurrentSource, discover_instruments, find_config_for_idn
 from relay import RelayController, discover_relay_port
 from measurement import run_measurement
-from report import build_report, write_report_xlsx
+from report import prepare_data, write_report_xlsx
 
 
 LogFn = Callable[[str], None]
@@ -115,9 +115,10 @@ def run_measurement_session(
     should_stop: StopFn = None,
 ) -> pd.DataFrame:
     """
-    Полный цикл: подобрать/открыть приборы и реле, снять обе ветви, посчитать
-    ожидаемое напряжение и погрешность. Возвращает DataFrame результатов
-    (уже с колонками V_expected_V, Error_percent).
+    Полный цикл: подобрать/открыть приборы и реле, снять обе ветви.
+    Возвращает DataFrame первичных измерений (ток задания + напряжение с
+    датчика). Ничего производного не считается — погрешность оператор
+    считает вручную по ТЗ/ТУ.
 
     rm             — уже созданный pyvisa.ResourceManager (см. visa_backend).
     params         — словарь параметров из cli.resolve_measure_params
@@ -157,7 +158,7 @@ def run_measurement_session(
 
     log("Измерения завершены, источник и реле выключены.")
 
-    df = build_report(pd.DataFrame(results), params['i_nom'])
+    df = prepare_data(pd.DataFrame(results))
 
     if xlsx_path is not None:
         write_report_xlsx(xlsx_path, df, params)

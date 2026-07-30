@@ -1,15 +1,18 @@
 """
-Расчёт ожидаемого напряжения/погрешности и запись результата в Excel.
+Запись результата измерения в Excel.
 
-Заменяет связку CSV + отдельная команда analyze из IVTrace: DTCal сразу
-после измерения знает модель датчика (и её I_ном), поэтому считает
-погрешность на месте и пишет один .xlsx с двумя листами — данные и
-метаданные сессии. Графики не строятся (не нужны для этой задачи).
+DTCal выдаёт ТОЛЬКО первичные данные: какой ток задали и какое напряжение
+показал вольтметр. Ожидаемое напряжение и погрешность здесь намеренно не
+считаются — выходная характеристика зависит от конкретного подключённого
+датчика (может быть биполярной, может быть однополярной 2..10 В), поэтому
+расчёт делается вручную по ТЗ/ТУ вне программы.
+
+Книга состоит из двух листов:
+    «Инфо»   — метаданные сессии (что, чем и с какими параметрами снимали);
+    «Данные» — измерения: время, направление, ток задания, напряжение.
 
 Оформление листов делается здесь же (ширина колонок, форматы чисел,
 закреплённая шапка), чтобы готовый файл не приходилось подгонять руками.
-Погрешность выводится с явным знаком — направление отклонения от
-номинальной характеристики важно для калибровки.
 """
 from datetime import datetime
 from pathlib import Path
@@ -17,8 +20,6 @@ from pathlib import Path
 import pandas as pd
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
-
-from sensors import expected_voltage, error_percent, SPAN
 
 
 # Внутренние (англоязычные) имена колонок -> заголовки для Excel.
@@ -29,41 +30,41 @@ COLUMN_TITLES = {
     'Branch': 'Направление',
     'I_set_A': 'I задан., А',
     'V_meas_V': 'U измер., В',
-    'V_expected_V': 'U ожид., В',
-    'Error_percent': 'Погрешность, %',
 }
+
+# Порядок колонок в файле. Это и есть полный состав данных: ничего
+# производного не добавляется.
+DATA_COLUMNS = ['Timestamp', 'Branch', 'I_set_A', 'V_meas_V']
 
 BRANCH_TITLES = {'forward': 'прямое', 'reverse': 'обратное'}
 
-# Формат с явным знаком: секции Excel — положительные;отрицательные;ноль.
-SIGNED_PERCENT_FORMAT = '+0.000;-0.000;0.000'
+NUMBER_FORMATS = {
+    'I_set_A': '0.00',
+    # Знак напряжения значим: на обратной ветви выход может быть
+    # отрицательным, и «-» не должен потеряться при форматировании.
+    'V_meas_V': '0.0000',
+}
 
 _HEADER_FILL = PatternFill('solid', fgColor='EFEFEF')
 _HEADER_FONT = Font(bold=True)
 
 
-def build_report(df: pd.DataFrame, i_nom: float) -> pd.DataFrame:
+def prepare_data(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Добавляет к сырым данным измерения колонки V_expected_V и Error_percent (со знаком).
+    Приводит сырой результат измерения к финальному составу колонок.
 
     Пустой DataFrame (измерение остановили до первой точки) не является
     ошибкой: возвращаем пустую таблицу с полным набором колонок, иначе
-    обращение к df['I_set_A'] упало бы с KeyError.
+    последующее обращение к df['I_set_A'] упало бы с KeyError.
     """
-    if i_nom is None or i_nom <= 0:
-        raise ValueError(f"Номинальный ток должен быть положительным, получено {i_nom!r}")
-
     df = df.copy()
 
     if df.empty:
-        for col in list(COLUMN_TITLES):
+        for col in DATA_COLUMNS:
             if col not in df.columns:
                 df[col] = pd.Series(dtype='float64')
-        return df
 
-    df['V_expected_V'] = df['I_set_A'].apply(lambda i: expected_voltage(i, i_nom))
-    df['Error_percent'] = df.apply(lambda r: error_percent(r['V_meas_V'], r['V_expected_V']), axis=1)
-    return df
+    return df.reindex(columns=[c for c in DATA_COLUMNS if c in df.columns or df.empty])
 
 
 def _autosize(worksheet, df_like_widths: dict, min_width: int = 10, max_width: int = 22):
@@ -81,24 +82,13 @@ def _style_header(worksheet, ncols: int):
     worksheet.freeze_panes = 'A2'
 
 
-def _format_data_sheet(worksheet, df: pd.DataFrame):
-    columns = list(df.columns)
+def _format_data_sheet(worksheet, columns):
     _style_header(worksheet, len(columns))
-
-    # Числовые форматы по смыслу колонки: ток — 2 знака, напряжения — 4,
-    # погрешность — 3 знака и обязательный знак «+»/«−».
-    number_formats = {
-        'I_set_A': '0.00',
-        'V_meas_V': '0.0000',
-        'V_expected_V': '0.0000',
-        'Error_percent': SIGNED_PERCENT_FORMAT,
-    }
 
     widths = {}
     for idx, name in enumerate(columns, start=1):
-        header_len = len(COLUMN_TITLES.get(name, name))
-        widths[idx] = header_len + 4
-        fmt = number_formats.get(name)
+        widths[idx] = len(COLUMN_TITLES.get(name, name)) + 4
+        fmt = NUMBER_FORMATS.get(name)
         if fmt is None:
             continue
         for row in range(2, worksheet.max_row + 1):
@@ -122,11 +112,9 @@ def _format_info_sheet(worksheet):
 
 
 def write_report_xlsx(xlsx_path: Path, df: pd.DataFrame, params: dict) -> None:
-    """Пишет .xlsx с листом 'Данные' (измерения + погрешность) и листом 'Инфо' (метаданные сессии)."""
+    """Пишет .xlsx с листом 'Данные' (первичные измерения) и листом 'Инфо' (метаданные сессии)."""
     xlsx_path = Path(xlsx_path)
     xlsx_path.parent.mkdir(parents=True, exist_ok=True)
-
-    finite_errors = df['Error_percent'].dropna() if 'Error_percent' in df.columns else pd.Series(dtype='float64')
 
     info_rows = [
         ("Датчик", params['model']),
@@ -138,24 +126,22 @@ def write_report_xlsx(xlsx_path: Path, df: pd.DataFrame, params: dict) -> None:
         ("Задержка охлаждения, с", params['cooling_delay']),
         # Пустая строка в xlsx читается обратно как NaN — пишем прочерк.
         ("Комментарий", params.get('label') or "—"),
-        ("Нормирующее значение погрешности, В", SPAN),
-        ("Нормировка", "приведённая погрешность по ГОСТ 8.401-80 (шкала со смещённым нулём: 2..10 В)"),
-        ("Знак погрешности", "«+» выход выше номинальной характеристики, «−» ниже"),
         ("Время измерения", datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
         ("Всего точек", len(df)),
-        ("Макс. |погрешность|, %", round(float(finite_errors.abs().max()), 4) if not finite_errors.empty else "—"),
-        ("Средняя погрешность (со знаком), %", round(float(finite_errors.mean()), 4) if not finite_errors.empty else "—"),
+        ("Содержимое файла", "только первичные данные измерения"),
+        ("Погрешность", "не рассчитывается — считается вручную по ТЗ/ТУ на датчик"),
     ]
     info_df = pd.DataFrame(info_rows, columns=["Параметр", "Значение"])
 
-    out = df.copy()
-    if 'Branch' in out.columns:
-        out['Branch'] = out['Branch'].map(lambda b: BRANCH_TITLES.get(b, b))
-    out = out.rename(columns=COLUMN_TITLES)
+    data = prepare_data(df)
+    columns = list(data.columns)
+    if 'Branch' in data.columns:
+        data['Branch'] = data['Branch'].map(lambda b: BRANCH_TITLES.get(b, b))
+    data = data.rename(columns=COLUMN_TITLES)
 
     with pd.ExcelWriter(xlsx_path, engine='openpyxl') as writer:
         info_df.to_excel(writer, sheet_name='Инфо', index=False)
-        out.to_excel(writer, sheet_name='Данные', index=False)
+        data.to_excel(writer, sheet_name='Данные', index=False)
 
         _format_info_sheet(writer.sheets['Инфо'])
-        _format_data_sheet(writer.sheets['Данные'], df)
+        _format_data_sheet(writer.sheets['Данные'], columns)

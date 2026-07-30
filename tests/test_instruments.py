@@ -80,7 +80,7 @@ def picotest_cfg(instruments_dir):
 def test_multimeter_init_prefers_hardware_autorange(akip2101_cfg, make_fake_rm):
     """
     Основное решение DTCal: доверяем аппаратному автодиапазону прибора, а не
-    массиву ranges из конфига. Выход датчика всегда 2..10 В, гоняться за
+    массиву ranges из конфига. Выход датчика — единицы вольт, гоняться за
     диапазоном не нужно, а ошибиться в массиве шкал легко.
     """
     fake = FakeVisaResource()

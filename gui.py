@@ -720,18 +720,20 @@ class DTCalGUI:
                         self._append_log("\n⚠ Измерение не дало ни одной точки (остановлено сразу?).\n")
                         self._set_status("Нет данных", "error")
                     else:
-                        errors = df['Error_percent'].dropna()
+                        # NaN — несостоявшееся чтение, а не 0 В: полный провал
+                        # по всем точкам показываем как ошибку связи.
+                        readings = df['V_meas_V'].dropna()
                         n = len(df)
-                        if errors.empty:
+                        if readings.empty:
                             self._append_log(
                                 f"\n✔ Измерение завершено: {n} {self._points_word(n)}, "
                                 "но ни одно чтение не удалось (все точки NaN).\n")
                             self._set_status("Измерение завершено, данных нет", "error")
                         else:
                             self._append_log(
-                                f"\n✔ Измерение завершено: {n} {self._points_word(n)}.\n"
-                                f"  Макс. приведённая погрешность: {errors.abs().max():.4f} %\n"
-                                f"  Средняя приведённая погрешность (со знаком): {errors.mean():+.4f} %\n"
+                                f"\n✔ Измерение завершено: {n} {self._points_word(n)}, "
+                                f"успешных чтений {len(readings)}.\n"
+                                f"  Измеренное напряжение: {readings.min():+.4f} .. {readings.max():+.4f} В\n"
                                 "  Нажмите «Сохранить в Excel».\n")
                             self._set_status("Измерение завершено", "ok")
                 elif kind == "error":
