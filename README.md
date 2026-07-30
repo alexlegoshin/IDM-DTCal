@@ -23,6 +23,7 @@
 >   первичные данные (подробнее — «Почему погрешность не считается» ниже).
 >   Порядок обхода точек «навстречу друг другу» с учётом намагничивания
 >   датчика. **Проверена на реальном оборудовании.**
+>   Релиз: [v1.1-raw](https://github.com/alexlegoshin/IDM-DTCal/releases/tag/v1.1) (Latest).
 > - [`legacy/autorange-error-calc-tested`](https://github.com/alexlegoshin/IDM-DTCal/tree/legacy/autorange-error-calc-tested) —
 >   более ранний снимок main (до отказа от расчёта погрешности): считает
 >   приведённую погрешность по ГОСТ 8.401-80, но по **однополярной** шкале
@@ -31,12 +32,14 @@
 >   аппаратный autorange вольтметра, поддержка Rigol DM3068, переработанные
 >   GUI и Excel-отчёт. **Проверена на реальном оборудовании.** Зафиксирована
 >   как рабочий снимок и дальше не развивается.
+>   Релиз: [v1.0-legacy](https://github.com/alexlegoshin/IDM-DTCal/releases/tag/v1.0).
 > - [`fix/bipolar-output-scale`](https://github.com/alexlegoshin/IDM-DTCal/tree/fix/bipolar-output-scale) —
 >   расчёт погрешности не убран, а исправлен: биполярная характеристика
 >   (`V_minus/V_zero/V_plus`, по умолчанию −4/0/+4 В) вместо однополярной,
 >   расчёт вынесен на отдельный лист «Погрешность» с явным предупреждением.
 >   **Не проверена на реальном оборудовании и проверяться не будет** —
 >   только тесты на синтетике.
+>   Релиз: [v1.1-fix](https://github.com/alexlegoshin/IDM-DTCal/releases/tag/v1.1-bipolar-fix) (Pre-release).
 
 ---
 
