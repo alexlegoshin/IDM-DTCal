@@ -74,7 +74,8 @@ class FakeRelay:
         return 'OK'
 
 
-def test_measure_branch_averages_three_readings_and_signs_i_set():
+def test_measure_branch_ascends_by_default():
+    """Прямая ветвь идёт снизу вверх: 0 … +I_max."""
     dmm = FakeDMM(readings=[6.0, 6.1, 6.2] * 3)  # 3 точки по 3 чтения
     src = FakeSource()
 
@@ -91,7 +92,11 @@ def test_measure_branch_averages_three_readings_and_signs_i_set():
     assert all(r['Branch'] == 'forward' for r in results)
 
 
-def test_measure_branch_negative_sign_produces_negative_i_set():
+def test_measure_branch_descending_goes_from_max_to_zero():
+    """
+    Обратная ветвь идёт навстречу прямой: -I_max … 0. Вместе получается
+    связный путь по току, что важно из-за намагничивания датчика.
+    """
     dmm = FakeDMM(readings=[6.5] * 9)
     src = FakeSource()
 
@@ -99,10 +104,50 @@ def test_measure_branch_negative_sign_produces_negative_i_set():
         dmm, src,
         I_start=0, I_stop=2, I_step=1,
         delay=0, cooling_delay=0,
-        sign=-1, branch_name='reverse',
+        sign=-1, branch_name='reverse', descending=True,
     )
 
-    assert [r['I_set_A'] for r in results] == [0, -1, -2]
+    assert [r['I_set_A'] for r in results] == [-2, -1, 0]
+
+
+def test_measure_branch_setpoints_follow_sweep_direction():
+    """Источнику ток задаётся в порядке обхода, и ноль ему не подаётся вовсе."""
+    dmm = FakeDMM(readings=[6.0] * 24)
+
+    up = FakeSource()
+    _measure_branch(dmm, up, I_start=0, I_stop=3, I_step=1,
+                    delay=0, cooling_delay=0, sign=+1, branch_name='forward')
+    assert up.current_setpoints == [1, 2, 3]
+
+    down = FakeSource()
+    _measure_branch(dmm, down, I_start=0, I_stop=3, I_step=1,
+                    delay=0, cooling_delay=0, sign=-1, branch_name='reverse',
+                    descending=True)
+    assert down.current_setpoints == [3, 2, 1]
+
+
+def test_measure_branch_does_not_energise_source_at_zero():
+    """
+    В нулевой точке выход источника не включается: подавать «0 А» смысла нет.
+    Выход при этом снимается явно, чтобы состояние было гарантировано.
+    """
+    dmm = FakeDMM(readings=[6.0] * 3)
+    src = FakeSource()
+
+    results = _measure_branch(
+        dmm, src,
+        I_start=0, I_stop=0, I_step=1,
+        delay=0, cooling_delay=0,
+        sign=+1, branch_name='forward',
+    )
+
+    assert len(results) == 1
+    assert results[0]['I_set_A'] == 0
+    assert src.current_setpoints == []          # set_current не вызывался
+    assert src.output_count('output_on') == 0
+    assert src.output_count('output_off') == 1  # выход снят явно
+    # Измерение при этом всё равно выполнено.
+    assert results[0]['V_meas_V'] == pytest.approx(6.0)
 
 
 def test_measure_branch_all_reads_failing_yields_nan_not_zero():
@@ -140,6 +185,10 @@ def test_measure_branch_partial_failure_averages_successful_reads():
 
 
 def test_measure_branch_turns_output_off_for_every_point():
+    """
+    Ток под нагрузкой не остаётся между точками. Точки 1 и 2 включают выход и
+    снимают его, нулевая — только снимает (включать её незачем).
+    """
     dmm = FakeDMM(readings=[6.0] * 9)
     src = FakeSource()
 
@@ -150,7 +199,7 @@ def test_measure_branch_turns_output_off_for_every_point():
         sign=+1, branch_name='forward',
     )
 
-    assert src.output_count('output_on') == 3
+    assert src.output_count('output_on') == 2
     assert src.output_count('output_off') == 3
 
 
@@ -224,8 +273,9 @@ def test_run_measurement_runs_forward_then_reverse_and_shuts_down():
     signs = {r['Branch']: [] for r in results}
     for r in results:
         signs[r['Branch']].append(r['I_set_A'])
+    # Ветви идут навстречу: 0 … +I_max, щелчок реле, -I_max … 0.
     assert signs['forward'] == [0, 1]
-    assert signs['reverse'] == [0, -1]
+    assert signs['reverse'] == [-1, 0]
 
 
 def test_run_measurement_passes_v_limit_to_setup():

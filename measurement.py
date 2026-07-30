@@ -10,15 +10,33 @@ from relay import RelayController
 
 READS_PER_POINT = 3
 
+# Ток считается нулевым, если он меньше этого значения по модулю, А.
+# Порог, а не сравнение с 0.0: I_start приходит от оператора и может прийти
+# как -0.0 или как остаток округления.
+ZERO_CURRENT_EPS_A = 1e-12
+
 
 def _measure_branch(dmm: DMM, src: CurrentSource,
                      I_start: float, I_stop: float, I_step: float,
                      delay: float, cooling_delay: float,
                      sign: int, branch_name: str,
-                     should_stop: Optional[Callable[[], bool]] = None) -> List[Dict]:
+                     should_stop: Optional[Callable[[], bool]] = None,
+                     descending: bool = False) -> List[Dict]:
     """
-    Выполняет один проход измерения (0..I_max) для уже установленного реле
+    Выполняет один проход измерения для уже установленного реле
     (направление задаётся снаружи через relay.forward()/reverse()).
+
+    descending задаёт порядок обхода точек:
+        False — от I_start к I_stop (0 … +I_max), используется прямой ветвью;
+        True  — от I_stop к I_start (I_max … 0), используется обратной.
+
+    Вместе это даёт непрерывный проход по току: 0 … +I_max, щелчок реле,
+    -I_max … 0. Датчик намагничивается, поэтому важен именно связный путь по
+    шкале, а не два одинаковых прохода от нуля.
+
+    I_start/I_stop в обоих случаях остаются границами диапазона (start <= stop)
+    — меняется только порядок обхода, поэтому валидация параметров и
+    сохранённые конфиги прежние.
 
     Возбуждение всегда током (src.set_current). Измеряемая величина —
     выходное напряжение датчика; оно записывается как есть, включая знак:
@@ -38,16 +56,31 @@ def _measure_branch(dmm: DMM, src: CurrentSource,
     num_steps = int(round((I_stop - I_start) / I_step)) + 1
     results = []
 
-    for step in range(num_steps):
+    steps = range(num_steps - 1, -1, -1) if descending else range(num_steps)
+
+    for step in steps:
         if should_stop is not None and should_stop():
             print(f"  [{branch_name}] Остановка по запросу пользователя.")
             break
 
         abs_value = I_start + step * I_step
         signed_value = abs_value * sign
+        # 0.0 * -1 даёт -0.0, и в журнале/Excel это выглядит как «-0.0000».
+        if signed_value == 0:
+            signed_value = 0.0
 
-        src.set_current(abs_value)
-        src.output_on()
+        # Нулевую точку снимаем при ВЫКЛЮЧЕННОМ выходе источника: подавать
+        # «ток 0 А» бессмысленно — включённый выход на нуле всё равно держит
+        # датчик в контуре регулирования источника. Выход снимаем явно, чтобы
+        # условие было гарантировано здесь, а не унаследовано от прошлой точки.
+        drive_source = abs(abs_value) > ZERO_CURRENT_EPS_A
+
+        if drive_source:
+            src.set_current(abs_value)
+            src.output_on()
+        else:
+            src.output_off()
+
         try:
             time.sleep(delay)
 
@@ -60,7 +93,8 @@ def _measure_branch(dmm: DMM, src: CurrentSource,
         finally:
             # Выход источника снимаем всегда, даже если чтение свалилось с
             # неожиданной ошибкой: оставить ток в датчике нельзя.
-            src.output_off()
+            if drive_source:
+                src.output_off()
 
         if voltages:
             v_avg = sum(voltages) / len(voltages)
@@ -79,7 +113,8 @@ def _measure_branch(dmm: DMM, src: CurrentSource,
             'V_meas_V': v_avg,
         })
 
-        print(f"  [{branch_name}] I_уст = {signed_value:+.4f} А  ->  V_изм = {v_avg:.6f} В")
+        note = "" if drive_source else "   (выход источника снят)"
+        print(f"  [{branch_name}] I_уст = {signed_value:+.4f} А  ->  V_изм = {v_avg:.6f} В{note}")
 
     return results
 
@@ -92,9 +127,16 @@ def run_measurement(dmm: DMM, src: CurrentSource, relay: RelayController,
     Полный двусторонний цикл измерения характеристики датчика ДТ100А1/ДТ500А1
     с автоматическим переключением полярности через плату реле:
 
-        1) relay.forward() -> проход 0..I_max (положительная ветвь, sign=+1)
-        2) relay.reverse() -> проход 0..I_max (отрицательная ветвь, sign=-1)
+        1) relay.forward() -> проход 0 … +I_max (положительная ветвь, sign=+1)
+        2) relay.reverse() -> проход -I_max … 0 (отрицательная ветвь, sign=-1)
         3) relay.off()
+
+    Ветви идут навстречу друг другу, поэтому по току получается связный путь
+    0 … +I_max, затем -I_max … 0. Датчик намагничивается, и такой проход
+    физически корректнее двух одинаковых прогонов от нуля.
+
+    Реле переключается между крайними точками (+I_max и -I_max), но ток в
+    этот момент не течёт: выход источника снимается после каждой точки.
 
     Возбуждение — источник тока (V_limit — защитное ограничение напряжения
     на источнике). Выход датчика (измеряемая величина) — напряжение,
@@ -125,6 +167,7 @@ def run_measurement(dmm: DMM, src: CurrentSource, relay: RelayController,
         results += _measure_branch(
             dmm, src, I_start, I_stop, I_step, delay, cooling_delay,
             sign=-1, branch_name='reverse', should_stop=should_stop,
+            descending=True,
         )
     finally:
         # Оба выключения — независимо друг от друга: сбой снятия выхода

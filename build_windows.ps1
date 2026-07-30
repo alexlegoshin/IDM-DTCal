@@ -1,4 +1,4 @@
-# Сборка DTCal в portable-приложение (Windows, onedir).
+﻿# Сборка DTCal в portable-приложение (Windows, onedir).
 #
 # Запуск из корня проекта в PowerShell:
 #     .\build_windows.ps1
