@@ -4,7 +4,14 @@ from datetime import datetime
 from pathlib import Path
 
 from config import ConfigManager
-from sensors import SENSOR_MODELS, MODEL_CLI_ALIASES
+from sensors import (
+    MODEL_CLI_ALIASES,
+    SENSOR_MODELS,
+    V_MINUS_DEFAULT,
+    V_PLUS_DEFAULT,
+    V_ZERO_DEFAULT,
+    scale_from_params,
+)
 
 
 def build_parser(default_data_dir: Path = Path("data")) -> argparse.ArgumentParser:
@@ -50,6 +57,21 @@ def build_parser(default_data_dir: Path = Path("data")) -> argparse.ArgumentPars
     p_measure.add_argument("--delay", type=float, help="Задержка на установку возбуждения, с")
     p_measure.add_argument("--cool", type=float, help="Задержка на охлаждение между точками, с")
     p_measure.add_argument("--label", type=str, help="Комментарий (пометка)")
+    # Точки номинальной выходной характеристики. Вынесены в параметры, а не
+    # зашиты в код: паспортные значения уточняются по ТЗ/ТУ, и у ДТ500А1 ноль
+    # может быть слегка смещён.
+    p_measure.add_argument(
+        "--v-minus", type=float, dest="v_minus", default=None,
+        help=f"Выход датчика при I = -I ном., В (по умолчанию {V_MINUS_DEFAULT:g})",
+    )
+    p_measure.add_argument(
+        "--v-zero", type=float, dest="v_zero", default=None,
+        help=f"Выход датчика при I = 0, В (по умолчанию {V_ZERO_DEFAULT:g}; у ДТ500А1 может быть смещён)",
+    )
+    p_measure.add_argument(
+        "--v-plus", type=float, dest="v_plus", default=None,
+        help=f"Выход датчика при I = +I ном., В (по умолчанию {V_PLUS_DEFAULT:g})",
+    )
     p_measure.add_argument(
         "--dmm-addr", type=str, default=None,
         help="VISA-адрес мультиметра (пропустить автоопределение)",
@@ -83,6 +105,10 @@ def validate_measure_params(params: dict) -> list:
     Защищает от I_step<=0 (деление на ноль в measurement.py) и
     I_stop < I_start (пустой проход измерения), а также от отрицательных
     задержек и неположительного V_limit источника тока.
+
+    Отдельно проверяются точки выходной характеристики: невозрастающая
+    тройка (например, перепутанные местами V(-I ном.) и V(+I ном.)) дала бы
+    погрешность с обратным знаком, а нулевой размах — деление на ноль.
     """
     errors = []
     if params.get('I_step') is None or params['I_step'] <= 0:
@@ -95,6 +121,10 @@ def validate_measure_params(params: dict) -> list:
         errors.append("Задержка на охлаждение не может быть отрицательной.")
     if params.get('V_limit') is None or params['V_limit'] <= 0:
         errors.append("Ограничение напряжения должно быть положительным числом.")
+    try:
+        scale_from_params(params)
+    except (ValueError, TypeError) as e:
+        errors.append(str(e))
     return errors
 
 
@@ -169,6 +199,24 @@ def resolve_measure_params(args, config_mgr: ConfigManager) -> dict:
 
     # Подсказки из сохранённого конфига валидны только если модель совпадает
     saved_matches_model = bool(saved) and saved.get('model') == model
+
+    # --- точки выходной характеристики ---
+    # Интерактивно не спрашиваем: у них есть осмысленный номинал (±4 В), а
+    # уточнение по ТЗ/ТУ — редкая операция. Приоритет: флаг -> сохранённое
+    # (той же модели) -> номинал.
+    scale_defaults = {'V_minus': V_MINUS_DEFAULT, 'V_zero': V_ZERO_DEFAULT, 'V_plus': V_PLUS_DEFAULT}
+    for key, arg_value in (('V_minus', args.v_minus), ('V_zero', args.v_zero), ('V_plus', args.v_plus)):
+        if arg_value is not None:
+            params[key] = arg_value
+        elif saved_matches_model and saved.get(key) is not None:
+            params[key] = saved[key]
+        else:
+            params[key] = scale_defaults[key]
+
+    print(f"\nНоминальная выходная характеристика {model}: "
+          f"V(-I ном.) = {params['V_minus']:+g} В, V(0) = {params['V_zero']:+g} В, "
+          f"V(+I ном.) = {params['V_plus']:+g} В")
+    print("  (при необходимости уточните по ТЗ/ТУ ключами --v-minus/--v-zero/--v-plus)")
 
     if not have_all_numeric:
         if saved_matches_model and not args.yes:

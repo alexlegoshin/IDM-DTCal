@@ -21,6 +21,7 @@ from instruments import Multimeter, CurrentSource, discover_instruments, find_co
 from relay import RelayController, discover_relay_port
 from measurement import run_measurement
 from report import build_report, write_report_xlsx
+from sensors import scale_from_params
 
 
 LogFn = Callable[[str], None]
@@ -80,15 +81,18 @@ def _resolve_instruments(rm, dmm_addr: Optional[str], src_addr: Optional[str], l
     )
 
 
-def _open_instruments(dmm_addr, dmm_cfg, src_addr, src_cfg, relay_port, rm):
+def _open_instruments(dmm_addr, dmm_cfg, src_addr, src_cfg, relay_port, rm, full_scale_v=None):
     """
     Открывает вольтметр, источник и реле. Если открытие второго или третьего
     прибора падает, уже открытые закрываются — иначе VISA-сессия остаётся
     висеть и прибор недоступен до перезапуска программы.
+
+    full_scale_v — максимальный модуль выхода датчика; нужен вольтметру
+    только для выбора резервного диапазона, если автодиапазон не поддержан.
     """
     opened = []
     try:
-        dmm = Multimeter(dmm_addr, dmm_cfg, rm=rm)
+        dmm = Multimeter(dmm_addr, dmm_cfg, rm=rm, full_scale_v=full_scale_v)
         opened.append(dmm)
         src = CurrentSource(src_addr, src_cfg, rm=rm)
         opened.append(src)
@@ -121,7 +125,9 @@ def run_measurement_session(
 
     rm             — уже созданный pyvisa.ResourceManager (см. visa_backend).
     params         — словарь параметров из cli.resolve_measure_params
-                     (обязательно содержит 'i_nom' — номинальный ток модели датчика).
+                     (обязательно содержит 'i_nom' — номинальный ток модели
+                     датчика; опционально V_minus/V_zero/V_plus — точки
+                     номинальной выходной характеристики, иначе ±4 В).
     xlsx_path      — если задан, результат сразу пишется в этот .xlsx (путь CLI).
                      Если None, файл не пишется: GUI сохраняет данные отдельно.
     dmm/src/relay  — необязательные ручные адреса (иначе автообнаружение).
@@ -130,6 +136,8 @@ def run_measurement_session(
 
     Гарантирует выключение источника и реле в блоке finally, даже при ошибке.
     """
+    scale = scale_from_params(params)
+
     dmm_addr, dmm_cfg, src_addr, src_cfg = _resolve_instruments(rm, dmm_addr, src_addr, log)
 
     if relay_port:
@@ -137,7 +145,10 @@ def run_measurement_session(
     else:
         relay_port = discover_relay_port()
 
-    dmm, src, relay = _open_instruments(dmm_addr, dmm_cfg, src_addr, src_cfg, relay_port, rm)
+    log(f"Номинальная характеристика датчика: {scale.describe_points()}")
+
+    dmm, src, relay = _open_instruments(dmm_addr, dmm_cfg, src_addr, src_cfg, relay_port, rm,
+                                        full_scale_v=scale.max_abs)
 
     log("Приборы и реле инициализированы. Начинаю измерения...")
 
@@ -157,7 +168,7 @@ def run_measurement_session(
 
     log("Измерения завершены, источник и реле выключены.")
 
-    df = build_report(pd.DataFrame(results), params['i_nom'])
+    df = build_report(pd.DataFrame(results), params['i_nom'], scale)
 
     if xlsx_path is not None:
         write_report_xlsx(xlsx_path, df, params)

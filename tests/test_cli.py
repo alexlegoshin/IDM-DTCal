@@ -89,6 +89,70 @@ def test_resolve_measure_params_from_full_cli_args(tmp_path):
     assert mgr.load() == params
 
 
+def test_resolve_measure_params_defaults_to_bipolar_scale(tmp_path):
+    """Без флагов берётся номинальная симметричная шкала ±4 В, а не старая 2..10 В."""
+    parser = build_parser()
+    args = _measure_args(parser, [
+        "--model", "DT100A1",
+        "--start", "0", "--stop", "10", "--step", "1",
+        "--vlimit", "5", "--delay", "0.1", "--cool", "0.1",
+        "--label", "T", "--yes",
+    ])
+    mgr = ConfigManager(tmp_path / "cfg.json")
+
+    params = resolve_measure_params(args, mgr)
+
+    assert params['V_minus'] == -4.0
+    assert params['V_zero'] == 0.0
+    assert params['V_plus'] == 4.0
+
+
+def test_resolve_measure_params_accepts_shifted_scale(tmp_path):
+    """Случай ДТ500А1: точки уточняются по ТЗ/ТУ и сохраняются в конфиг."""
+    parser = build_parser()
+    args = _measure_args(parser, [
+        "--model", "DT500A1",
+        "--start", "0", "--stop", "500", "--step", "50",
+        "--vlimit", "5", "--delay", "0.1", "--cool", "0.1",
+        "--v-minus", "-3.96", "--v-zero", "0.04", "--v-plus", "4.04",
+        "--label", "T", "--yes",
+    ])
+    mgr = ConfigManager(tmp_path / "cfg.json")
+
+    params = resolve_measure_params(args, mgr)
+
+    assert params['V_minus'] == -3.96
+    assert params['V_zero'] == 0.04
+    assert params['V_plus'] == 4.04
+    assert mgr.load()['V_zero'] == 0.04
+
+
+def test_resolve_measure_params_rejects_inverted_scale(tmp_path):
+    """Перепутанные пределы дали бы погрешность с обратным знаком — ловим сразу."""
+    parser = build_parser()
+    args = _measure_args(parser, [
+        "--model", "DT100A1",
+        "--start", "0", "--stop", "10", "--step", "1",
+        "--vlimit", "5", "--delay", "0.1", "--cool", "0.1",
+        "--v-minus", "4", "--v-zero", "0", "--v-plus", "-4",
+        "--label", "Bad", "--yes",
+    ])
+    mgr = ConfigManager(tmp_path / "cfg.json")
+
+    with pytest.raises(ValueError, match="характеристики"):
+        resolve_measure_params(args, mgr)
+
+
+def test_validate_measure_params_flags_bad_scale():
+    errors = validate_measure_params({
+        'I_start': 0.0, 'I_stop': 10.0, 'I_step': 1.0, 'V_limit': 5.0,
+        'delay': 0.1, 'cooling_delay': 0.1,
+        'V_minus': -4.0, 'V_zero': 9.0, 'V_plus': 4.0,   # ноль вне диапазона
+    })
+
+    assert any("характеристики" in e for e in errors)
+
+
 def test_resolve_measure_params_step_zero_raises_value_error(tmp_path):
     parser = build_parser()
     args = _measure_args(parser, [

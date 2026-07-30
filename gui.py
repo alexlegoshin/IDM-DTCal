@@ -37,7 +37,7 @@ from tkinter import ttk, scrolledtext, messagebox, filedialog
 from apppaths import default_data_dir
 from config import ConfigManager
 from cli import make_result_filename, validate_measure_params
-from sensors import SENSOR_MODELS
+from sensors import SENSOR_MODELS, V_MINUS_DEFAULT, V_PLUS_DEFAULT, V_ZERO_DEFAULT
 
 
 ACCENT = "#2563eb"
@@ -231,8 +231,20 @@ class DTCalGUI:
         ttk.Label(pf, text="Обе полярности снимаются автоматически через реле.",
                   style="Sub.TLabel").grid(row=7, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
+        sf = ttk.Labelframe(left, text="Номинальная выходная характеристика", padding=10)
+        sf.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+        sf.columnconfigure(1, weight=1)
+
+        self.e_vminus = self._param_row(sf, 0, "U при I = −I ном.", "В")
+        self.e_vzero = self._param_row(sf, 1, "U при I = 0", "В")
+        self.e_vplus = self._param_row(sf, 2, "U при I = +I ном.", "В")
+        ttk.Label(sf, text="По этим точкам считается погрешность.\n"
+                           "Сверьте значения с ТЗ/ТУ на датчик: у ДТ500А1 ноль\n"
+                           "бывает смещён (например, −3.96 / +0.04 / +4.04 В).",
+                  style="Sub.TLabel").grid(row=3, column=0, columnspan=3, sticky="w", pady=(6, 0))
+
         actions = ttk.Frame(left)
-        actions.grid(row=2, column=0, sticky="ew", pady=(12, 0))
+        actions.grid(row=3, column=0, sticky="ew", pady=(12, 0))
         actions.columnconfigure(0, weight=1)
         actions.columnconfigure(1, weight=1)
         self.start_btn = ttk.Button(actions, text="▶  Старт измерения", style="Accent.TButton",
@@ -244,7 +256,7 @@ class DTCalGUI:
 
         ttk.Checkbutton(left, text="Игнорировать самотесты (не рекомендуется)",
                         variable=self.skip_selftest_var,
-                        command=self._run_preflight).grid(row=3, column=0, sticky="w", pady=(8, 0))
+                        command=self._run_preflight).grid(row=4, column=0, sticky="w", pady=(8, 0))
 
     def _param_row(self, parent, row, label, unit=""):
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=3)
@@ -347,11 +359,15 @@ class DTCalGUI:
         self._set_entry(self.e_vlimit, DEFAULT_V_LIMIT)
         self._set_entry(self.e_delay, DEFAULT_DELAY)
         self._set_entry(self.e_cool, DEFAULT_COOLING)
+        self._set_entry(self.e_vminus, V_MINUS_DEFAULT)
+        self._set_entry(self.e_vzero, V_ZERO_DEFAULT)
+        self._set_entry(self.e_vplus, V_PLUS_DEFAULT)
 
         # Сохранённые значения перекрывают подстановку по умолчанию.
         mapping = {
             "I_start": self.e_start, "I_stop": self.e_stop, "I_step": self.e_step,
             "V_limit": self.e_vlimit, "delay": self.e_delay, "cooling_delay": self.e_cool,
+            "V_minus": self.e_vminus, "V_zero": self.e_vzero, "V_plus": self.e_vplus,
             "label": self.e_label,
         }
         for key, entry in mapping.items():
@@ -409,6 +425,9 @@ class DTCalGUI:
                 "V_limit": num(self.e_vlimit, "Огр. напряжения"),
                 "delay": num(self.e_delay, "Задержка установки"),
                 "cooling_delay": num(self.e_cool, "Задержка охлаждения"),
+                "V_minus": num(self.e_vminus, "U при I = −I ном."),
+                "V_zero": num(self.e_vzero, "U при I = 0"),
+                "V_plus": num(self.e_vplus, "U при I = +I ном."),
                 "label": self.e_label.get().strip(),
             }
         except ValueError as e:
@@ -495,7 +514,10 @@ class DTCalGUI:
             "Запуск измерения",
             f"Датчик: {params['model']} (I ном. {params['i_nom']:g} А)\n"
             f"Диапазон: {params['I_start']:g}..{params['I_stop']:g} А (шаг {params['I_step']:g} А)\n"
-            f"Обе полярности через реле.\n\nЗапустить измерение?",
+            f"Обе полярности через реле.\n\n"
+            f"Погрешность будет считаться по характеристике\n"
+            f"{params['V_minus']:+g} / {params['V_zero']:+g} / {params['V_plus']:+g} В — сверьте с ТЗ/ТУ.\n\n"
+            f"Запустить измерение?",
         ):
             return
 

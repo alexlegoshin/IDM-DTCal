@@ -80,8 +80,8 @@ def picotest_cfg(instruments_dir):
 def test_multimeter_init_prefers_hardware_autorange(akip2101_cfg, make_fake_rm):
     """
     Основное решение DTCal: доверяем аппаратному автодиапазону прибора, а не
-    массиву ranges из конфига. Выход датчика всегда 2..10 В, гоняться за
-    диапазоном не нужно, а ошибиться в массиве шкал легко.
+    массиву ranges из конфига. Выход датчика лежит в узкой биполярной шкале
+    (-4..+4 В), гоняться за диапазоном не нужно, а ошибиться в массиве шкал легко.
     """
     fake = FakeVisaResource()
     rm = make_fake_rm({"FAKE::ADDR": fake})
@@ -98,14 +98,15 @@ def test_multimeter_init_prefers_hardware_autorange(akip2101_cfg, make_fake_rm):
 
 
 def test_multimeter_falls_back_to_fixed_range_when_autorange_unsupported(akip2101_cfg, make_fake_rm):
-    """Если прибор не принял команду автодиапазона — ставим фиксированную шкалу, покрывающую 10 В."""
+    """Если прибор не принял команду автодиапазона — ставим фиксированную шкалу, покрывающую ±4 В."""
     fake = FakeVisaResource(fail_writes=["SENS:VOLT:DC:RANG:AUTO"])
     rm = make_fake_rm({"FAKE::ADDR": fake})
 
     dmm = Multimeter("FAKE::ADDR", akip2101_cfg, rm=rm)
 
     assert dmm.autorange_active is False
-    assert dmm.active_range == 20.0  # наименьшая шкала Siglent, покрывающая 10 В
+    # Шкалы Siglent 0.2/2/20/200/1000: 2 В не покрывает 4 В, берётся 20 В.
+    assert dmm.active_range == 20.0
     assert fake.written[-1] == 'SENS:VOLT:DC:RANG 20.0'
 
 
@@ -220,13 +221,27 @@ def test_picotest_ranges_are_not_siglent_ranges(picotest_cfg):
 
 
 def test_multimeter_fallback_range_covers_full_sensor_scale(picotest_cfg, make_fake_rm):
-    """Резервный диапазон обязан покрывать 10 В — максимум выхода датчика."""
+    """Резервный диапазон обязан покрывать максимум |V| выхода датчика (4 В)."""
     fake = FakeVisaResource(fail_writes=["SENS:VOLT:DC:RANG:AUTO"])
     rm = make_fake_rm({"FAKE::ADDR": fake})
 
     dmm = Multimeter("FAKE::ADDR", picotest_cfg, rm=rm)
 
+    # Шкалы Picotest 0.1/1/10/100/1000: 1 В мало, ближайшая покрывающая — 10 В.
     assert dmm.active_range == 10.0
+
+
+def test_multimeter_fallback_range_follows_custom_full_scale(picotest_cfg, make_fake_rm):
+    """
+    Точки характеристики задаёт оператор, поэтому и требуемая шкала — параметр
+    сессии. Округление всегда вверх: недобор диапазона уводит прибор в перегрузку.
+    """
+    fake = FakeVisaResource(fail_writes=["SENS:VOLT:DC:RANG:AUTO"])
+    rm = make_fake_rm({"FAKE::ADDR": fake})
+
+    dmm = Multimeter("FAKE::ADDR", picotest_cfg, rm=rm, full_scale_v=0.5)
+
+    assert dmm.active_range == 1.0
 
 
 def test_multimeter_close_does_not_raise(akip2101_cfg, make_fake_rm):

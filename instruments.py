@@ -4,10 +4,11 @@
 Политика диапазонов вольтметра (важно, отличается от IVTrace):
     В IVTrace измерялся ток в диапазоне нескольких декад, поэтому диапазон
     вёлся вручную по массиву ranges из конфига. В DTCal измеряемая величина —
-    выходное напряжение датчика, которое по определению всегда лежит в
-    2..10 В. Гоняться за диапазоном не нужно, а вот ошибиться в массиве
-    ranges — легко (например, у Picotest/АКИП-B7-78/1 шкалы 0.1/1/10/100/1000,
-    а не 0.2/2/20/200/1000, как у Siglent и Rigol).
+    выходное напряжение датчика, которое лежит в узкой биполярной шкале
+    (по умолчанию -4..+4 В, см. sensors.OutputScale). Гоняться за диапазоном
+    не нужно, а вот ошибиться в массиве ranges — легко (например, у
+    Picotest/АКИП-B7-78/1 шкалы 0.1/1/10/100/1000, а не 0.2/2/20/200/1000,
+    как у Siglent и Rigol).
 
     Поэтому приоритет отдан аппаратному автодиапазону самого прибора, а наш
     массив ranges остаётся только резервом, если автодиапазон не поддержан.
@@ -21,13 +22,19 @@ from typing import List, Optional, Tuple
 
 import pyvisa
 
-from sensors import V_PLUS
+from sensors import DEFAULT_SCALE
 
 
 class Multimeter:
     """Обёртка над вольтметром/мультиметром, измеряющим выходное напряжение датчика (АКИП-2101, АКИП-B7-78/1, Rigol DM3068 и т.п.)."""
 
-    def __init__(self, resource_addr: str, config_path: Path, rm: Optional[pyvisa.ResourceManager] = None):
+    def __init__(self, resource_addr: str, config_path: Path, rm: Optional[pyvisa.ResourceManager] = None,
+                 full_scale_v: Optional[float] = None):
+        # full_scale_v — максимальный модуль выхода датчика, В. Нужен только
+        # для выбора резервного фиксированного диапазона, если прибор не
+        # поддержал автодиапазон. По умолчанию берём номинальную шкалу
+        # (|±4 В|); сессия с уточнёнными точками характеристики передаёт своё.
+        self.full_scale_v = DEFAULT_SCALE.max_abs if full_scale_v is None else abs(full_scale_v)
         self.config = json.loads(Path(config_path).read_text(encoding='utf-8'))
         self.rm = rm or pyvisa.ResourceManager()
         self.instr = self.rm.open_resource(resource_addr)
@@ -94,9 +101,16 @@ class Multimeter:
         print("  [вольтметр] диапазон задать не удалось, работаю на текущих настройках прибора")
 
     def _fallback_range(self) -> Optional[float]:
-        """Наименьший диапазон из конфига, покрывающий полную шкалу датчика (10 В)."""
+        """
+        Наименьший диапазон из конфига, покрывающий полную шкалу датчика.
+
+        Сравнение идёт по модулю выхода: шкала биполярная (-4..+4 В), и
+        диапазон вольтметра тоже симметричен, поэтому важен максимум |V|.
+        Ошибиться в большую сторону безопасно (теряется разрешение), в
+        меньшую — нет (прибор уйдёт в перегрузку).
+        """
         for r in self.ranges:
-            if r >= V_PLUS:
+            if r >= self.full_scale_v:
                 return r
         return self.ranges[-1] if self.ranges else None
 
